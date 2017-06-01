@@ -30,9 +30,10 @@ func main() {
 
 // Main represents the main program execution.
 type Main struct {
-	mu        sync.Mutex
-	writtenN  int
-	startTime time.Time
+	mu            sync.Mutex
+	writtenN      int
+	startTime     time.Time
+	timePerSeries int64
 
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -113,6 +114,9 @@ func (m *Main) Run() error {
 
 	// Record start time.
 	m.startTime = time.Now()
+	if m.TimeSpan > 0 {
+		m.timePerSeries = int64(m.TimeSpan) / int64(m.PointN())
+	}
 
 	// Stream batches from a separate goroutine.
 	ch := m.generateBatches()
@@ -183,13 +187,20 @@ func (m *Main) generateBatches() <-chan []byte {
 	go func() {
 		var buf bytes.Buffer
 		values := make([]int, len(m.Tags))
+		lastWrittenTotal := m.WrittenN()
 		for i := 0; i < m.PointN(); i++ {
 			// Write point.
 			buf.Write([]byte("cpu"))
 			for j, value := range values {
 				fmt.Fprintf(&buf, ",tag%d=value%d", j, value)
 			}
-			buf.Write([]byte(" value=1\n"))
+
+			var tme string
+			if m.timePerSeries > 0 {
+				tme = fmt.Sprintf(" %d", m.startTime.Add(time.Duration(int64(lastWrittenTotal+i)*m.timePerSeries)).UnixNano())
+			}
+
+			buf.Write([]byte(fmt.Sprintf(" value=1%s\n", tme)))
 
 			// Increment next tag value.
 			for j := range values {
