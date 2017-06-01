@@ -30,9 +30,10 @@ func main() {
 
 // Main represents the main program execution.
 type Main struct {
-	mu        sync.Mutex
-	writtenN  int
-	startTime time.Time
+	mu            sync.Mutex
+	writtenN      int
+	startTime     time.Time
+	timePerSeries int64
 
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -44,6 +45,9 @@ type Main struct {
 	Tags            []int // tag cardinalities
 	PointsPerSeries int
 	BatchSize       int
+
+	Database string
+	TimeSpan time.Duration // The length of time to span writes over.
 }
 
 // NewMain returns a new instance of Main.
@@ -64,6 +68,9 @@ func (m *Main) ParseFlags(args []string) error {
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
 	fs.IntVar(&m.PointsPerSeries, "p", 100, "Points per series")
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
+	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
+	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -93,7 +100,12 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Total series: %d\n", m.SeriesN())
 	fmt.Fprintf(m.Stdout, "Total points: %d\n", m.PointN())
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
-	fmt.Fprintln(m.Stdout, "")
+	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
+	dur := fmt.Sprint(m.TimeSpan)
+	if m.TimeSpan == 0 {
+		dur = "off"
+	}
+	fmt.Fprintf(m.Stdout, "Time span: %s\n", dur)
 
 	// Initialize database.
 	if err := m.setup(); err != nil {
@@ -102,6 +114,9 @@ func (m *Main) Run() error {
 
 	// Record start time.
 	m.startTime = time.Now()
+	if m.TimeSpan > 0 {
+		m.timePerSeries = int64(m.TimeSpan) / int64(m.PointN())
+	}
 
 	// Stream batches from a separate goroutine.
 	ch := m.generateBatches()
@@ -172,13 +187,20 @@ func (m *Main) generateBatches() <-chan []byte {
 	go func() {
 		var buf bytes.Buffer
 		values := make([]int, len(m.Tags))
+		lastWrittenTotal := m.WrittenN()
 		for i := 0; i < m.PointN(); i++ {
 			// Write point.
 			buf.Write([]byte("cpu"))
 			for j, value := range values {
 				fmt.Fprintf(&buf, ",tag%d=value%d", j, value)
 			}
-			buf.Write([]byte(" value=1\n"))
+
+			var tme string
+			if m.timePerSeries > 0 {
+				tme = fmt.Sprintf(" %d", m.startTime.Add(time.Duration(int64(lastWrittenTotal+i)*m.timePerSeries)).UnixNano())
+			}
+
+			buf.Write([]byte(fmt.Sprintf(" value=1%s\n", tme)))
 
 			// Increment next tag value.
 			for j := range values {
@@ -264,7 +286,7 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 // setup initializes the database.
 func (m *Main) setup() error {
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+stress"))
+	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+m.Database))
 	if err != nil {
 		return err
 	}
@@ -281,7 +303,7 @@ func (m *Main) setup() error {
 func (m *Main) sendBatch(buf []byte) error {
 	// Send batch.
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/write?db=stress&precision=ns", m.Host), "text/ascii", bytes.NewReader(buf))
+	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns", m.Host, m.Database), "text/ascii", bytes.NewReader(buf))
 	if err != nil {
 		return err
 	}
