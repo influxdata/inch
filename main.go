@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"time"
 )
+
+var ErrConnectionRefused = errors.New("connection refused")
 
 func main() {
 	m := NewMain()
@@ -267,8 +270,11 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 			}
 
 			// Keep trying batch until successful.
+			// Stop client if it cannot connect.
 			for {
-				if err := m.sendBatch(buf); err != nil {
+				if err := m.sendBatch(buf); err == ErrConnectionRefused {
+					return
+				} else if err != nil {
 					fmt.Fprintln(m.Stderr, err)
 					continue
 				}
@@ -305,6 +311,9 @@ func (m *Main) sendBatch(buf []byte) error {
 	var client http.Client
 	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns", m.Host, m.Database), "text/ascii", bytes.NewReader(buf))
 	if err != nil {
+		if strings.Contains(err.Error(), "connection refused") {
+			return ErrConnectionRefused
+		}
 		return err
 	}
 	defer resp.Body.Close()
