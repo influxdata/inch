@@ -44,6 +44,9 @@ type Main struct {
 	Tags            []int // tag cardinalities
 	PointsPerSeries int
 	BatchSize       int
+
+	Database string
+	TimeSpan time.Duration // The length of time to span writes over.
 }
 
 // NewMain returns a new instance of Main.
@@ -64,6 +67,9 @@ func (m *Main) ParseFlags(args []string) error {
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
 	fs.IntVar(&m.PointsPerSeries, "p", 100, "Points per series")
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
+	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
+	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -93,7 +99,12 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Total series: %d\n", m.SeriesN())
 	fmt.Fprintf(m.Stdout, "Total points: %d\n", m.PointN())
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
-	fmt.Fprintln(m.Stdout, "")
+	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
+	dur := fmt.Sprint(m.TimeSpan)
+	if m.TimeSpan == 0 {
+		dur = "off"
+	}
+	fmt.Fprintf(m.Stdout, "Time span: %s\n", dur)
 
 	// Initialize database.
 	if err := m.setup(); err != nil {
@@ -264,7 +275,7 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 // setup initializes the database.
 func (m *Main) setup() error {
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+stress"))
+	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+m.Database))
 	if err != nil {
 		return err
 	}
@@ -281,7 +292,7 @@ func (m *Main) setup() error {
 func (m *Main) sendBatch(buf []byte) error {
 	// Send batch.
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/write?db=stress&precision=ns", m.Host), "text/ascii", bytes.NewReader(buf))
+	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns", m.Host, m.Database), "text/ascii", bytes.NewReader(buf))
 	if err != nil {
 		return err
 	}
