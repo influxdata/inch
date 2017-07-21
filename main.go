@@ -45,6 +45,7 @@ type Main struct {
 	Verbose         bool
 	Host            string
 	Concurrency     int
+	Measurements    int   // Number of measurements
 	Tags            []int // tag cardinalities
 	PointsPerSeries int
 	BatchSize       int
@@ -68,6 +69,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.BoolVar(&m.Verbose, "v", false, "Verbose")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
 	fs.IntVar(&m.Concurrency, "c", 1, "Concurrency")
+	fs.IntVar(&m.Measurements, "m", 1, "Measurements")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
 	fs.IntVar(&m.PointsPerSeries, "p", 100, "Points per series")
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
@@ -98,6 +100,7 @@ func (m *Main) Run() error {
 	// Print settings.
 	fmt.Fprintf(m.Stdout, "Host: %s\n", m.Host)
 	fmt.Fprintf(m.Stdout, "Concurrency: %d\n", m.Concurrency)
+	fmt.Fprintf(m.Stdout, "Measurements: %d\n", m.Measurements)
 	fmt.Fprintf(m.Stdout, "Tag cardinalities: %+v\n", m.Tags)
 	fmt.Fprintf(m.Stdout, "Points per series: %d\n", m.PointsPerSeries)
 	fmt.Fprintf(m.Stdout, "Total series: %d\n", m.SeriesN())
@@ -160,13 +163,18 @@ func (m *Main) WrittenN() int {
 	return m.writtenN
 }
 
-// SeriesN returns the total number of series to write.
-func (m *Main) SeriesN() int {
+// TagsN returns the total number of tags.
+func (m *Main) TagsN() int {
 	i := m.Tags[0]
 	for _, v := range m.Tags[1:] {
 		i *= v
 	}
 	return i
+}
+
+// SeriesN returns the total number of series to write.
+func (m *Main) SeriesN() int {
+	return m.TagsN() * m.Measurements
 }
 
 // PointN returns the total number of points to write.
@@ -193,7 +201,7 @@ func (m *Main) generateBatches() <-chan []byte {
 		lastWrittenTotal := m.WrittenN()
 		for i := 0; i < m.PointN(); i++ {
 			// Write point.
-			buf.Write([]byte("cpu"))
+			buf.Write([]byte(fmt.Sprintf("m%d", i%m.Measurements)))
 			for j, value := range values {
 				fmt.Fprintf(&buf, ",tag%d=value%d", j, value)
 			}
