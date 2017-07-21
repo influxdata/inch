@@ -16,6 +16,7 @@ import (
 	"time"
 )
 
+// ErrConnectionRefused indicates that the connection to the remote server was refused.
 var ErrConnectionRefused = errors.New("connection refused")
 
 func main() {
@@ -48,6 +49,7 @@ type Main struct {
 	Measurements    int   // Number of measurements
 	Tags            []int // tag cardinalities
 	PointsPerSeries int
+	FieldsPerPoint  int
 	BatchSize       int
 
 	Database string
@@ -72,12 +74,18 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.Measurements, "m", 1, "Measurements")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
 	fs.IntVar(&m.PointsPerSeries, "p", 100, "Points per series")
+	fs.IntVar(&m.FieldsPerPoint, "f", 1, "Fields per point")
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
 	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if m.FieldsPerPoint < 1 {
+		fmt.Fprintf(os.Stderr, "number of fields must be > 0")
+		os.Exit(1)
 	}
 
 	// Parse tag cardinalities.
@@ -105,6 +113,7 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Points per series: %d\n", m.PointsPerSeries)
 	fmt.Fprintf(m.Stdout, "Total series: %d\n", m.SeriesN())
 	fmt.Fprintf(m.Stdout, "Total points: %d\n", m.PointN())
+	fmt.Fprintf(m.Stdout, "Total fields per point: %d\n", m.FieldsPerPoint)
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
 	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
 	dur := fmt.Sprint(m.TimeSpan)
@@ -199,6 +208,17 @@ func (m *Main) generateBatches() <-chan []byte {
 		var buf bytes.Buffer
 		values := make([]int, len(m.Tags))
 		lastWrittenTotal := m.WrittenN()
+
+		// Generate field string.
+		var fields []byte
+		for i := 0; i < m.FieldsPerPoint; i++ {
+			var delim string
+			if i < m.FieldsPerPoint-1 {
+				delim = ","
+			}
+			fields = append(fields, []byte(fmt.Sprintf("v%d=1%s", i, delim))...)
+		}
+
 		for i := 0; i < m.PointN(); i++ {
 			// Write point.
 			buf.Write([]byte(fmt.Sprintf("m%d", i%m.Measurements)))
@@ -206,20 +226,22 @@ func (m *Main) generateBatches() <-chan []byte {
 				fmt.Fprintf(&buf, ",tag%d=value%d", j, value)
 			}
 
-			var tme string
+			// Write fields
+			buf.Write(append([]byte(" "), fields...))
+
 			if m.timePerSeries > 0 {
-				tme = fmt.Sprintf(" %d", m.startTime.Add(time.Duration(int64(lastWrittenTotal+i)*m.timePerSeries)).UnixNano())
+				buf.Write([]byte(fmt.Sprintf(" %d\n", m.startTime.Add(time.Duration(int64(lastWrittenTotal+i)*m.timePerSeries)).UnixNano())))
+			} else {
+				fmt.Fprint(&buf, "\n")
 			}
 
-			buf.Write([]byte(fmt.Sprintf(" value=1%s\n", tme)))
-
 			// Increment next tag value.
-			for j := range values {
-				values[j]++
-				if values[j] < m.Tags[j] {
+			for i := range values {
+				values[i]++
+				if values[i] < m.Tags[i] {
 					break
 				} else {
-					values[j] = 0 // reset to zero, increment next value
+					values[i] = 0 // reset to zero, increment next value
 					continue
 				}
 			}
