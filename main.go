@@ -44,6 +44,7 @@ type Main struct {
 	Stderr io.Writer
 
 	Verbose         bool
+	DryRun          bool
 	Host            string
 	Concurrency     int
 	Measurements    int   // Number of measurements
@@ -69,6 +70,7 @@ func NewMain() *Main {
 func (m *Main) ParseFlags(args []string) error {
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.Verbose, "v", false, "Verbose")
+	fs.BoolVar(&m.DryRun, "dry", false, "Dry run (maximum writer perf of inch on box)")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
 	fs.IntVar(&m.Concurrency, "c", 1, "Concurrency")
 	fs.IntVar(&m.Measurements, "m", 1, "Measurements")
@@ -337,6 +339,11 @@ func (m *Main) setup() error {
 
 // sendBatch writes a batch to the server. Continually retries until successful.
 func (m *Main) sendBatch(buf []byte) error {
+	// Don't send the batch anywhere..
+	if m.DryRun {
+		return nil
+	}
+
 	// Send batch.
 	var client http.Client
 	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns", m.Host, m.Database), "text/ascii", bytes.NewReader(buf))
