@@ -45,7 +45,9 @@ type Main struct {
 
 	Verbose         bool
 	DryRun          bool
+	Strict          bool
 	Host            string
+	Consistency     string
 	Concurrency     int
 	Measurements    int   // Number of measurements
 	Tags            []int // tag cardinalities
@@ -71,7 +73,9 @@ func (m *Main) ParseFlags(args []string) error {
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.Verbose, "v", false, "Verbose")
 	fs.BoolVar(&m.DryRun, "dry", false, "Dry run (maximum writer perf of inch on box)")
+	fs.BoolVar(&m.Strict, "strict", false, "Terminate process if error encountered")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
+	fs.StringVar(&m.Consistency, "consistency", "any", "Write consistency (default any)")
 	fs.IntVar(&m.Concurrency, "c", 1, "Concurrency")
 	fs.IntVar(&m.Measurements, "m", 1, "Measurements")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
@@ -83,6 +87,13 @@ func (m *Main) ParseFlags(args []string) error {
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	switch m.Consistency {
+	case "any", "quorum", "one", "all":
+	default:
+		fmt.Fprintf(os.Stderr, `Consistency must be one of: {"any", "quorum", "one", "all"}`)
+		os.Exit(1)
 	}
 
 	if m.FieldsPerPoint < 1 {
@@ -118,6 +129,8 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Total fields per point: %d\n", m.FieldsPerPoint)
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
 	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
+	fmt.Fprintf(m.Stdout, "Write Consistency: %s\n", m.Consistency)
+
 	dur := fmt.Sprint(m.TimeSpan)
 	if m.TimeSpan == 0 {
 		dur = "off"
@@ -308,6 +321,9 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 					return
 				} else if err != nil {
 					fmt.Fprintln(m.Stderr, err)
+					if m.Strict {
+						os.Exit(1)
+					}
 					continue
 				}
 				break
@@ -346,7 +362,7 @@ func (m *Main) sendBatch(buf []byte) error {
 
 	// Send batch.
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns", m.Host, m.Database), "text/ascii", bytes.NewReader(buf))
+	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", m.Host, m.Database, m.Consistency), "text/ascii", bytes.NewReader(buf))
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
 			return ErrConnectionRefused
