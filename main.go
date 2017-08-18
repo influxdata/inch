@@ -57,6 +57,7 @@ type Main struct {
 
 	Database string
 	TimeSpan time.Duration // The length of time to span writes over.
+	Delay    time.Duration // A delay inserted in between writes.
 }
 
 // NewMain returns a new instance of Main.
@@ -84,6 +85,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
 	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
+	fs.DurationVar(&m.Delay, "delay", 0, "Delay between writes")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -130,6 +132,7 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
 	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
 	fmt.Fprintf(m.Stdout, "Write Consistency: %s\n", m.Consistency)
+	fmt.Fprintf(m.Stdout, "Write Delay: %s\n", m.Delay)
 
 	dur := fmt.Sprint(m.TimeSpan)
 	if m.TimeSpan == 0 {
@@ -380,6 +383,9 @@ func (m *Main) sendBatch(buf []byte) error {
 		return fmt.Errorf("[%d] %s", resp.StatusCode, body)
 	}
 
+	if m.Delay > 0 {
+		time.Sleep(m.Delay)
+	}
 	return nil
 }
 
