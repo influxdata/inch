@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -37,6 +38,7 @@ type Main struct {
 	mu            sync.Mutex
 	writtenN      int
 	startTime     time.Time
+	now           time.Time
 	timePerSeries int64
 
 	Stdin  io.Reader
@@ -44,7 +46,10 @@ type Main struct {
 	Stderr io.Writer
 
 	Verbose         bool
+	DryRun          bool
+	Strict          bool
 	Host            string
+	Consistency     string
 	Concurrency     int
 	Measurements    int   // Number of measurements
 	Tags            []int // tag cardinalities
@@ -54,6 +59,7 @@ type Main struct {
 
 	Database string
 	TimeSpan time.Duration // The length of time to span writes over.
+	Delay    time.Duration // A delay inserted in between writes.
 }
 
 // NewMain returns a new instance of Main.
@@ -69,7 +75,10 @@ func NewMain() *Main {
 func (m *Main) ParseFlags(args []string) error {
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.Verbose, "v", false, "Verbose")
+	fs.BoolVar(&m.DryRun, "dry", false, "Dry run (maximum writer perf of inch on box)")
+	fs.BoolVar(&m.Strict, "strict", false, "Terminate process if error encountered")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
+	fs.StringVar(&m.Consistency, "consistency", "any", "Write consistency (default any)")
 	fs.IntVar(&m.Concurrency, "c", 1, "Concurrency")
 	fs.IntVar(&m.Measurements, "m", 1, "Measurements")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
@@ -78,9 +87,17 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
 	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
+	fs.DurationVar(&m.Delay, "delay", 0, "Delay between writes")
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	switch m.Consistency {
+	case "any", "quorum", "one", "all":
+	default:
+		fmt.Fprintf(os.Stderr, `Consistency must be one of: {"any", "quorum", "one", "all"}`)
+		os.Exit(1)
 	}
 
 	if m.FieldsPerPoint < 1 {
@@ -116,11 +133,13 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Total fields per point: %d\n", m.FieldsPerPoint)
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
 	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
+	fmt.Fprintf(m.Stdout, "Write Consistency: %s\n", m.Consistency)
+	fmt.Fprintf(m.Stdout, "Write Delay: %s\n", m.Delay)
+
 	dur := fmt.Sprint(m.TimeSpan)
 	if m.TimeSpan == 0 {
 		dur = "off"
 	}
-	fmt.Fprintf(m.Stdout, "Time span: %s\n", dur)
 
 	// Initialize database.
 	if err := m.setup(); err != nil {
@@ -128,9 +147,24 @@ func (m *Main) Run() error {
 	}
 
 	// Record start time.
-	m.startTime = time.Now()
-	if m.TimeSpan > 0 {
-		m.timePerSeries = int64(m.TimeSpan) / int64(m.PointN())
+	m.now = time.Now().UTC()
+	m.startTime = m.now
+	if m.TimeSpan != 0 {
+		absTimeSpan := int64(math.Abs(float64(m.TimeSpan)))
+		m.timePerSeries = absTimeSpan / int64(m.PointN())
+
+		// If we're back-filling then we need to move the start time back.
+		if m.TimeSpan < 0 {
+			m.startTime = m.startTime.Add(m.TimeSpan)
+		}
+	}
+	fmt.Fprintf(m.Stdout, "Start time: %s\n", m.startTime)
+	if m.TimeSpan < 0 {
+		fmt.Fprintf(m.Stdout, "Approx End time: %s\n", time.Now().UTC())
+	} else if m.TimeSpan > 0 {
+		fmt.Fprintf(m.Stdout, "Approx End time: %s\n", m.startTime.Add(m.TimeSpan).UTC())
+	} else {
+		fmt.Fprintf(m.Stdout, "Time span: %s\n", dur)
 	}
 
 	// Stream batches from a separate goroutine.
@@ -158,7 +192,7 @@ func (m *Main) Run() error {
 	monitorWaitGroup.Wait()
 
 	// Report stats.
-	elapsed := time.Since(m.startTime)
+	elapsed := time.Since(m.now)
 	fmt.Fprintln(m.Stdout, "")
 	fmt.Fprintf(m.Stdout, "Total time: %0.1f seconds\n", elapsed.Seconds())
 
@@ -229,8 +263,9 @@ func (m *Main) generateBatches() <-chan []byte {
 			// Write fields
 			buf.Write(append([]byte(" "), fields...))
 
-			if m.timePerSeries > 0 {
-				buf.Write([]byte(fmt.Sprintf(" %d\n", m.startTime.Add(time.Duration(int64(lastWrittenTotal+i)*m.timePerSeries)).UnixNano())))
+			if m.timePerSeries != 0 {
+				delta := time.Duration(int64(lastWrittenTotal+i) * m.timePerSeries)
+				buf.Write([]byte(fmt.Sprintf(" %d\n", m.startTime.Add(delta).UnixNano())))
 			} else {
 				fmt.Fprint(&buf, "\n")
 			}
@@ -283,7 +318,7 @@ func (m *Main) runMonitor(ctx context.Context) {
 
 func (m *Main) printMonitorStats() {
 	writtenN := m.WrittenN()
-	elapsed := time.Since(m.startTime).Seconds()
+	elapsed := time.Since(m.now).Seconds()
 	fmt.Printf("T=%08d %d points written (%0.1f pt/sec)\n", int(elapsed), writtenN, float64(writtenN)/elapsed)
 }
 
@@ -306,6 +341,9 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 					return
 				} else if err != nil {
 					fmt.Fprintln(m.Stderr, err)
+					if m.Strict {
+						os.Exit(1)
+					}
 					continue
 				}
 				break
@@ -337,9 +375,14 @@ func (m *Main) setup() error {
 
 // sendBatch writes a batch to the server. Continually retries until successful.
 func (m *Main) sendBatch(buf []byte) error {
+	// Don't send the batch anywhere..
+	if m.DryRun {
+		return nil
+	}
+
 	// Send batch.
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns", m.Host, m.Database), "text/ascii", bytes.NewReader(buf))
+	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", m.Host, m.Database, m.Consistency), "text/ascii", bytes.NewReader(buf))
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
 			return ErrConnectionRefused
@@ -357,6 +400,9 @@ func (m *Main) sendBatch(buf []byte) error {
 		return fmt.Errorf("[%d] %s", resp.StatusCode, body)
 	}
 
+	if m.Delay > 0 {
+		time.Sleep(m.Delay)
+	}
 	return nil
 }
 

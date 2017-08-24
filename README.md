@@ -25,12 +25,28 @@ Usage of inch:
     	Batch size (default 5000)
   -c int
     	Concurrency (default 1)
+  -consistency string
+    	Write consistency (default any) (default "any")
+  -db string
+    	Database to write to (default "stress")
+  -delay duration
+    	Delay between writes
+  -dry
+    	Dry run (maximum writer perf of inch on box)
+  -f int
+    	Fields per point (default 1)
   -host string
     	Host (default "http://localhost:8086")
+  -m int
+    	Measurements (default 1)
   -p int
     	Points per series (default 100)
+  -strict
+    	Terminate process if error encountered
   -t string
     	Tag cardinality (default "10,10,10")
+  -time duration
+    	Time span to spread writes over
   -v	Verbose
 ```
 
