@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -37,6 +38,7 @@ type Main struct {
 	mu            sync.Mutex
 	writtenN      int
 	startTime     time.Time
+	now           time.Time
 	timePerSeries int64
 
 	Stdin  io.Reader
@@ -138,7 +140,6 @@ func (m *Main) Run() error {
 	if m.TimeSpan == 0 {
 		dur = "off"
 	}
-	fmt.Fprintf(m.Stdout, "Time span: %s\n", dur)
 
 	// Initialize database.
 	if err := m.setup(); err != nil {
@@ -146,9 +147,24 @@ func (m *Main) Run() error {
 	}
 
 	// Record start time.
-	m.startTime = time.Now()
-	if m.TimeSpan > 0 {
-		m.timePerSeries = int64(m.TimeSpan) / int64(m.PointN())
+	m.now = time.Now().UTC()
+	m.startTime = m.now
+	if m.TimeSpan != 0 {
+		absTimeSpan := int64(math.Abs(float64(m.TimeSpan)))
+		m.timePerSeries = absTimeSpan / int64(m.PointN())
+
+		// If we're back-filling then we need to move the start time back.
+		if m.TimeSpan < 0 {
+			m.startTime = m.startTime.Add(m.TimeSpan)
+		}
+	}
+	fmt.Fprintf(m.Stdout, "Start time: %s\n", m.startTime)
+	if m.TimeSpan < 0 {
+		fmt.Fprintf(m.Stdout, "Approx End time: %s\n", time.Now().UTC())
+	} else if m.TimeSpan > 0 {
+		fmt.Fprintf(m.Stdout, "Approx End time: %s\n", m.startTime.Add(m.TimeSpan).UTC())
+	} else {
+		fmt.Fprintf(m.Stdout, "Time span: %s\n", dur)
 	}
 
 	// Stream batches from a separate goroutine.
@@ -176,7 +192,7 @@ func (m *Main) Run() error {
 	monitorWaitGroup.Wait()
 
 	// Report stats.
-	elapsed := time.Since(m.startTime)
+	elapsed := time.Since(m.now)
 	fmt.Fprintln(m.Stdout, "")
 	fmt.Fprintf(m.Stdout, "Total time: %0.1f seconds\n", elapsed.Seconds())
 
@@ -247,8 +263,9 @@ func (m *Main) generateBatches() <-chan []byte {
 			// Write fields
 			buf.Write(append([]byte(" "), fields...))
 
-			if m.timePerSeries > 0 {
-				buf.Write([]byte(fmt.Sprintf(" %d\n", m.startTime.Add(time.Duration(int64(lastWrittenTotal+i)*m.timePerSeries)).UnixNano())))
+			if m.timePerSeries != 0 {
+				delta := time.Duration(int64(lastWrittenTotal+i) * m.timePerSeries)
+				buf.Write([]byte(fmt.Sprintf(" %d\n", m.startTime.Add(delta).UnixNano())))
 			} else {
 				fmt.Fprint(&buf, "\n")
 			}
@@ -301,7 +318,7 @@ func (m *Main) runMonitor(ctx context.Context) {
 
 func (m *Main) printMonitorStats() {
 	writtenN := m.WrittenN()
-	elapsed := time.Since(m.startTime).Seconds()
+	elapsed := time.Since(m.now).Seconds()
 	fmt.Printf("T=%08d %d points written (%0.1f pt/sec)\n", int(elapsed), writtenN, float64(writtenN)/elapsed)
 }
 
