@@ -39,23 +39,27 @@ type Main struct {
 	writtenN      int
 	startTime     time.Time
 	now           time.Time
-	timePerSeries int64
+	timePerSeries int64 // How much the client is backing off due to unacceptible response times.
+	currentDelay  time.Duration
+	latencySum    time.Duration
+	httpWrites    int
 
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 
-	Verbose         bool
-	DryRun          bool
-	Strict          bool
-	Host            string
-	Consistency     string
-	Concurrency     int
-	Measurements    int   // Number of measurements
-	Tags            []int // tag cardinalities
-	PointsPerSeries int
-	FieldsPerPoint  int
-	BatchSize       int
+	Verbose          bool
+	DryRun           bool
+	Strict           bool
+	Host             string
+	Consistency      string
+	Concurrency      int
+	Measurements     int   // Number of measurements
+	Tags             []int // tag cardinalities
+	PointsPerSeries  int
+	FieldsPerPoint   int
+	BatchSize        int
+	TargetMaxLatency time.Duration
 
 	Database string
 	TimeSpan time.Duration // The length of time to span writes over.
@@ -88,6 +92,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
 	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
 	fs.DurationVar(&m.Delay, "delay", 0, "Delay between writes")
+	fs.DurationVar(&m.TargetMaxLatency, "target-latency", 0, "If set inch will attempt to adapt write delay to meet target")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -134,7 +139,12 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
 	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
 	fmt.Fprintf(m.Stdout, "Write Consistency: %s\n", m.Consistency)
-	fmt.Fprintf(m.Stdout, "Write Delay: %s\n", m.Delay)
+
+	if m.TargetMaxLatency > 0 {
+		fmt.Fprintf(m.Stdout, "Adaptive latency on. Max target: %s\n", m.TargetMaxLatency)
+	} else if m.Delay > 0 {
+		fmt.Fprintf(m.Stdout, "Fixed write delay: %s\n", m.Delay)
+	}
 
 	dur := fmt.Sprint(m.TimeSpan)
 	if m.TimeSpan == 0 {
@@ -319,7 +329,17 @@ func (m *Main) runMonitor(ctx context.Context) {
 func (m *Main) printMonitorStats() {
 	writtenN := m.WrittenN()
 	elapsed := time.Since(m.now).Seconds()
-	fmt.Printf("T=%08d %d points written (%0.1f pt/sec)\n", int(elapsed), writtenN, float64(writtenN)/elapsed)
+	var delay string
+
+	m.mu.Lock()
+	if m.TargetMaxLatency > 0 && m.httpWrites > 0 {
+		delay = fmt.Sprintf("Writer delay currently: %s. μ write latency: %s", m.currentDelay, m.latencySum/time.Duration(m.httpWrites))
+	}
+	m.mu.Unlock()
+
+	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec). %s\n",
+		int(elapsed), writtenN, float64(writtenN)/elapsed, float64(m.FieldsPerPoint)*(float64(writtenN)/elapsed),
+		delay)
 }
 
 // runClient executes a client to send points in a separate goroutine.
@@ -382,6 +402,7 @@ func (m *Main) sendBatch(buf []byte) error {
 
 	// Send batch.
 	var client http.Client
+	now := time.Now().UTC()
 	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", m.Host, m.Database, m.Consistency), "text/ascii", bytes.NewReader(buf))
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
@@ -400,9 +421,47 @@ func (m *Main) sendBatch(buf []byte) error {
 		return fmt.Errorf("[%d] %s", resp.StatusCode, body)
 	}
 
+	// Fixed delay.
 	if m.Delay > 0 {
 		time.Sleep(m.Delay)
+	} else if m.TargetMaxLatency <= 0 {
+		return nil
 	}
+
+	// We're using an adaptive delay. The general idea is that inch will backoff
+	// writers using a delay, if the response from the server is slower than
+	// the desired maximum latency.
+	//
+	// The implementation is pretty ghetto at the moment, it has the following
+	// rules:
+	//
+	//  - response time faster than desired latency and currentDelay > 0?
+	//		* reduce currentDelay by 1/n * 0.25 * responseDelay.
+	//	- response time slower than desired latency?
+	//		* increase currentDelay by 1/n * 0.25 * responseDelay.
+	//	- currentDelay < 100ms?
+	//		* set currentDelay to 0
+	//
+	// n is the number of concurent writers. The general rule then, is that
+	// we look at how far away from the desired latency and move a quarter of the
+	// way there in total (over all writers). If we're coming un under the max
+	// latency and our writers are using a delay (currentDelay > 0) then we will
+	// try to reduce this to increase throughput.
+	m.mu.Lock()
+	delta := 1.0 / float64(m.Concurrency) * 0.25 * float64(time.Since(now)-m.currentDelay)
+	m.currentDelay += time.Duration(delta)
+	if m.currentDelay < time.Millisecond*100 {
+		m.currentDelay = 0
+	}
+
+	thisDelay := m.currentDelay
+
+	// stats.
+	m.latencySum += time.Since(now)
+	m.httpWrites++
+	m.mu.Unlock()
+
+	time.Sleep(thisDelay)
 	return nil
 }
 
