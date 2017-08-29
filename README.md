@@ -45,6 +45,8 @@ Usage of inch:
     	Terminate process if error encountered
   -t string
     	Tag cardinality (default "10,10,10")
+  -target-latency duration
+      If set inch will attempt to adapt write delay to meet target
   -time duration
     	Time span to spread writes over
   -v	Verbose
@@ -58,4 +60,13 @@ each combination of these values so the total number of series can be computed
 by multiplying the values (`100 * 20 * 4`).
 
 By setting the `verbose` flag you can see progress each second.
+
+The `-target-latency` flag will allow `inch` to automatically backoff (add 
+delays after writing batches) according to the weighted moving average of 
+response times from the InfluxDB server. If the WMA of responses is greater than 
+the target latency then delays will be increased in an attempt to allow the 
+InfluxDB server time to recover and process in-flight writes. If a delay is in 
+place on `inch` clients yet the WMA of response times is lower than the target
+latency, then `inch` will reduce the delays in an attempt to increase throughput.
+
 

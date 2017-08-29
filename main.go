@@ -41,8 +41,10 @@ type Main struct {
 	now           time.Time
 	timePerSeries int64 // How much the client is backing off due to unacceptible response times.
 	currentDelay  time.Duration
-	latencySum    time.Duration
-	httpWrites    int
+	wmaLatency    float64
+
+	// Decay factor used when weighting average latency returned by server.
+	alpha float64
 
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -72,6 +74,7 @@ func NewMain() *Main {
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
+		alpha:  0.5, // Weight the mean latency by 50% history / 50% latest value.
 	}
 }
 
@@ -332,8 +335,8 @@ func (m *Main) printMonitorStats() {
 	var delay string
 
 	m.mu.Lock()
-	if m.TargetMaxLatency > 0 && m.httpWrites > 0 {
-		delay = fmt.Sprintf("Writer delay currently: %s. μ write latency: %s", m.currentDelay, m.latencySum/time.Duration(m.httpWrites))
+	if m.TargetMaxLatency > 0 {
+		delay = fmt.Sprintf("Writer delay currently: %s. WMA write latency: %s", m.currentDelay, time.Duration(m.wmaLatency))
 	}
 	m.mu.Unlock()
 
@@ -424,21 +427,23 @@ func (m *Main) sendBatch(buf []byte) error {
 	// Fixed delay.
 	if m.Delay > 0 {
 		time.Sleep(m.Delay)
+		return nil
 	} else if m.TargetMaxLatency <= 0 {
 		return nil
 	}
 
 	// We're using an adaptive delay. The general idea is that inch will backoff
-	// writers using a delay, if the response from the server is slower than
-	// the desired maximum latency.
+	// writers using a delay, if the average response from the server is getting
+	// slower than the desired maximum latency. We use a weighted moving average
+	// to determine that, favouring recent latencies over historic ones.
 	//
 	// The implementation is pretty ghetto at the moment, it has the following
 	// rules:
 	//
-	//  - response time faster than desired latency and currentDelay > 0?
-	//		* reduce currentDelay by 1/n * 0.25 * responseDelay.
+	//  - wma reponse time faster than desired latency and currentDelay > 0?
+	//		* reduce currentDelay by 1/n * 0.25 * (desired latency - wma latency).
 	//	- response time slower than desired latency?
-	//		* increase currentDelay by 1/n * 0.25 * responseDelay.
+	//		* increase currentDelay by 1/n * 0.25 * (desired latency - wma response).
 	//	- currentDelay < 100ms?
 	//		* set currentDelay to 0
 	//
@@ -448,7 +453,13 @@ func (m *Main) sendBatch(buf []byte) error {
 	// latency and our writers are using a delay (currentDelay > 0) then we will
 	// try to reduce this to increase throughput.
 	m.mu.Lock()
-	delta := 1.0 / float64(m.Concurrency) * 0.25 * float64(time.Since(now)-m.currentDelay)
+
+	// Calculate the weighted moving average latency. We weight this response
+	// latency by 1-alpha, and the historic average by alpha.
+	m.wmaLatency = (m.alpha * m.wmaLatency) + ((1.0 - m.alpha) * (float64(time.Since(now)) - m.wmaLatency))
+
+	// Update how we adjust our latency by
+	delta := 1.0 / float64(m.Concurrency) * 0.5 * (m.wmaLatency - float64(m.TargetMaxLatency))
 	m.currentDelay += time.Duration(delta)
 	if m.currentDelay < time.Millisecond*100 {
 		m.currentDelay = 0
@@ -456,9 +467,6 @@ func (m *Main) sendBatch(buf []byte) error {
 
 	thisDelay := m.currentDelay
 
-	// stats.
-	m.latencySum += time.Since(now)
-	m.httpWrites++
 	m.mu.Unlock()
 
 	time.Sleep(thisDelay)
