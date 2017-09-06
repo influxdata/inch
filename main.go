@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,13 +36,15 @@ func main() {
 
 // Main represents the main program execution.
 type Main struct {
-	mu            sync.Mutex
-	writtenN      int
-	startTime     time.Time
-	now           time.Time
-	timePerSeries int64 // How much the client is backing off due to unacceptible response times.
-	currentDelay  time.Duration
-	wmaLatency    float64
+	mu             sync.Mutex
+	writtenN       int
+	startTime      time.Time
+	now            time.Time
+	timePerSeries  int64 // How much the client is backing off due to unacceptible response times.
+	currentDelay   time.Duration
+	wmaLatency     float64
+	latencyHistory []time.Duration
+	totalLatency   time.Duration
 
 	// Decay factor used when weighting average latency returned by server.
 	alpha float64
@@ -71,10 +74,11 @@ type Main struct {
 // NewMain returns a new instance of Main.
 func NewMain() *Main {
 	return &Main{
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		alpha:  0.5, // Weight the mean latency by 50% history / 50% latest value.
+		Stdin:          os.Stdin,
+		Stdout:         os.Stdout,
+		Stderr:         os.Stderr,
+		alpha:          0.5, // Weight the mean latency by 50% history / 50% latest value.
+		latencyHistory: make([]time.Duration, 0, 200),
 	}
 }
 
@@ -333,16 +337,31 @@ func (m *Main) printMonitorStats() {
 	writtenN := m.WrittenN()
 	elapsed := time.Since(m.now).Seconds()
 	var delay string
+	var responses string
 
 	m.mu.Lock()
 	if m.TargetMaxLatency > 0 {
-		delay = fmt.Sprintf("Writer delay currently: %s. WMA write latency: %s", m.currentDelay, time.Duration(m.wmaLatency))
+		delay = fmt.Sprintf(" | Writer delay currently: %s. WMA write latency: %s", m.currentDelay, time.Duration(m.wmaLatency))
+	}
+
+	if len(m.latencyHistory) >= 100 {
+		responses = fmt.Sprintf(" | μ: %s, 90%%: %s, 95%%: %s, 99%%: %s", m.totalLatency/time.Duration(len(m.latencyHistory)), m.quartileResponse(0.9), m.quartileResponse(0.95), m.quartileResponse(0.99))
 	}
 	m.mu.Unlock()
 
-	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec). %s\n",
+	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec)%s%s\n",
 		int(elapsed), writtenN, float64(writtenN)/elapsed, float64(m.FieldsPerPoint)*(float64(writtenN)/elapsed),
-		delay)
+		delay, responses)
+}
+
+// This is really not the best way to do this, but it will give a reasonable
+// approximation.
+func (m *Main) quartileResponse(q float64) time.Duration {
+	i := int(float64(len(m.latencyHistory))*q) - 1
+	if i < 0 || i >= len(m.latencyHistory) {
+		return time.Duration(-1) // Problem..
+	}
+	return m.latencyHistory[i]
 }
 
 // runClient executes a client to send points in a separate goroutine.
@@ -424,6 +443,21 @@ func (m *Main) sendBatch(buf []byte) error {
 		return fmt.Errorf("[%d] %s", resp.StatusCode, body)
 	}
 
+	latency := time.Since(now)
+	m.mu.Lock()
+	m.totalLatency += latency
+
+	// Maintain sorted list of latencies for quantile reporting
+	i := sort.Search(len(m.latencyHistory), func(i int) bool { return m.latencyHistory[i] >= latency })
+	if i >= len(m.latencyHistory) {
+		m.latencyHistory = append(m.latencyHistory, latency)
+	} else {
+		m.latencyHistory = append(m.latencyHistory, 0)
+		copy(m.latencyHistory[i+1:], m.latencyHistory[i:])
+		m.latencyHistory[i] = latency
+	}
+	m.mu.Unlock()
+
 	// Fixed delay.
 	if m.Delay > 0 {
 		time.Sleep(m.Delay)
@@ -456,7 +490,7 @@ func (m *Main) sendBatch(buf []byte) error {
 
 	// Calculate the weighted moving average latency. We weight this response
 	// latency by 1-alpha, and the historic average by alpha.
-	m.wmaLatency = (m.alpha * m.wmaLatency) + ((1.0 - m.alpha) * (float64(time.Since(now)) - m.wmaLatency))
+	m.wmaLatency = (m.alpha * m.wmaLatency) + ((1.0 - m.alpha) * (float64(latency) - m.wmaLatency))
 
 	// Update how we adjust our latency by
 	delta := 1.0 / float64(m.Concurrency) * 0.5 * (m.wmaLatency - float64(m.TargetMaxLatency))
