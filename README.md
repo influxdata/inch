@@ -41,12 +41,16 @@ Usage of inch:
     	Measurements (default 1)
   -p int
     	Points per series (default 100)
+  -report-host string
+    	Host to send metrics
+  -report-tags string
+    	Comma separated k=v tags to report alongside metrics
   -strict
     	Terminate process if error encountered
   -t string
     	Tag cardinality (default "10,10,10")
   -target-latency duration
-      If set inch will attempt to adapt write delay to meet target
+    	If set inch will attempt to adapt write delay to meet target
   -time duration
     	Time span to spread writes over
   -v	Verbose
@@ -68,5 +72,15 @@ the target latency then delays will be increased in an attempt to allow the
 InfluxDB server time to recover and process in-flight writes. If a delay is in 
 place on `inch` clients yet the WMA of response times is lower than the target
 latency, then `inch` will reduce the delays in an attempt to increase throughput.
+
+The `-report-host` flag can be used to specify the location of an InfluxDB 
+instance, to be used for reporting the results of inch. A local instance to inch
+would be specified as `-report-host http://localhost:8086`. Inch will provide 
+appropriate tags where possible, but arbitrary tags can be set using the 
+`-report-tags` flag. The format for `-report-tags` is a comma separated list of 
+key value pairs. For example `-report-tags instance=m4.2xlarge,index=tsi1`.
+
+When `-report-host` is set to a non-empty value, inch will report throughput, 
+points and values written, as well as write latency statistics.
 
 

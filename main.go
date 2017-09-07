@@ -48,6 +48,7 @@ type Main struct {
 	wmaLatency     float64
 	latencyHistory []time.Duration
 	totalLatency   time.Duration
+	currentErrors  int // The current number of errors since last reporting.
 
 	// Client to be used to report statistics to an Influx instance.
 	clt client.Client
@@ -148,13 +149,15 @@ func (m *Main) ParseFlags(args []string) error {
 	}
 
 	// Parse report tags.
-	for _, tagPair := range strings.Split(*reportTags, ",") {
-		tag := strings.Split(tagPair, "=")
-		if len(tag) != 2 {
-			fmt.Fprintf(os.Stderr, "invalid tag pair %q", tagPair)
-			os.Exit(1)
+	if *reportTags != "" {
+		for _, tagPair := range strings.Split(*reportTags, ",") {
+			tag := strings.Split(tagPair, "=")
+			if len(tag) != 2 {
+				fmt.Fprintf(os.Stderr, "invalid tag pair %q", tagPair)
+				os.Exit(1)
+			}
+			m.ReportTags[tag[0]] = tag[1]
 		}
-		m.ReportTags[tag[0]] = tag[1]
 	}
 
 	// Setup reporting client?
@@ -375,7 +378,7 @@ func (m *Main) GatherStats() *Stats {
 	elapsed := time.Since(m.now).Seconds()
 	pThrough := float64(m.writtenN) / elapsed
 	s := &Stats{
-		Time: time.Now().UTC(),
+		Time: time.Unix(0, int64(time.Since(m.now))),
 		Tags: m.ReportTags,
 		Fields: models.Fields(map[string]interface{}{
 			"T":              int(elapsed),
@@ -383,6 +386,7 @@ func (m *Main) GatherStats() *Stats {
 			"values_written": m.writtenN * m.FieldsPerPoint,
 			"points_ps":      pThrough,
 			"values_ps":      pThrough * float64(m.FieldsPerPoint),
+			"write_error":    m.currentErrors,
 			"resp_wma":       int(m.wmaLatency),
 			"resp_mean":      int(m.totalLatency) / len(m.latencyHistory) / int(time.Millisecond),
 			"resp_90":        int(m.quartileResponse(0.9) / time.Millisecond),
@@ -396,6 +400,9 @@ func (m *Main) GatherStats() *Stats {
 		isCreating = true
 	}
 	s.Tags["creating_series"] = fmt.Sprint(isCreating)
+
+	// Reset error count for next reporting.
+	m.currentErrors = 0
 	m.mu.Unlock()
 	return s
 }
@@ -508,7 +515,7 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 // setup initializes the database.
 func (m *Main) setup() error {
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+m.Database))
+	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+m.Database+"+WITH+DURATION+"+m.ShardDuration))
 	if err != nil {
 		return err
 	}
@@ -542,6 +549,10 @@ func (m *Main) sendBatch(buf []byte) error {
 
 	// Return body as error if unsuccessful.
 	if resp.StatusCode != 204 {
+		m.mu.Lock()
+		m.currentErrors++
+		m.mu.Unlock()
+
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			body = []byte(err.Error())
