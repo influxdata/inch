@@ -16,6 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/influxdata/influxdb/client/v2"
+	"github.com/influxdata/influxdb/models"
 )
 
 // ErrConnectionRefused indicates that the connection to the remote server was refused.
@@ -46,6 +49,9 @@ type Main struct {
 	latencyHistory []time.Duration
 	totalLatency   time.Duration
 
+	// Client to be used to report statistics to an Influx instance.
+	clt client.Client
+
 	// Decay factor used when weighting average latency returned by server.
 	alpha float64
 
@@ -54,6 +60,8 @@ type Main struct {
 	Stderr io.Writer
 
 	Verbose          bool
+	ReportHost       string
+	ReportTags       map[string]string
 	DryRun           bool
 	Strict           bool
 	Host             string
@@ -86,6 +94,8 @@ func NewMain() *Main {
 func (m *Main) ParseFlags(args []string) error {
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.Verbose, "v", false, "Verbose")
+	fs.StringVar(&m.ReportHost, "report-host", "", "Host to send metrics")
+	reportTags := fs.String("report-tags", "", "Comma separated k=v tags to report alongside metrics")
 	fs.BoolVar(&m.DryRun, "dry", false, "Dry run (maximum writer perf of inch on box)")
 	fs.BoolVar(&m.Strict, "strict", false, "Terminate process if error encountered")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
@@ -126,6 +136,43 @@ func (m *Main) ParseFlags(args []string) error {
 		m.Tags = append(m.Tags, v)
 	}
 
+	// Basic report tags.
+	m.ReportTags = map[string]string{
+		"stress_tool": "inch",
+		"t":           *tags,
+		"batch_size":  fmt.Sprint(m.BatchSize),
+		"p":           fmt.Sprint(m.PointsPerSeries),
+		"c":           fmt.Sprint(m.Concurrency),
+		"m":           fmt.Sprint(m.Measurements),
+		"f":           fmt.Sprint(m.FieldsPerPoint),
+	}
+
+	// Parse report tags.
+	for _, tagPair := range strings.Split(*reportTags, ",") {
+		tag := strings.Split(tagPair, "=")
+		if len(tag) != 2 {
+			fmt.Fprintf(os.Stderr, "invalid tag pair %q", tagPair)
+			os.Exit(1)
+		}
+		m.ReportTags[tag[0]] = tag[1]
+	}
+
+	// Setup reporting client?
+	if m.ReportHost != "" {
+		var err error
+		m.clt, err = client.NewHTTPClient(client.HTTPConfig{
+			Addr: m.ReportHost,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		if _, err := m.clt.Query(client.NewQuery(fmt.Sprintf("CREATE DATABASE %q", m.Database), "", "")); err != nil {
+			fmt.Fprintf(os.Stderr, "unable to connect to %q", m.ReportHost)
+			os.Exit(1)
+		}
+	}
 	return nil
 }
 
@@ -317,6 +364,42 @@ func (m *Main) generateBatches() <-chan []byte {
 	return ch
 }
 
+type Stats struct {
+	Time   time.Time
+	Tags   map[string]string
+	Fields models.Fields
+}
+
+func (m *Main) GatherStats() *Stats {
+	m.mu.Lock()
+	elapsed := time.Since(m.now).Seconds()
+	pThrough := float64(m.writtenN) / elapsed
+	s := &Stats{
+		Time: time.Now().UTC(),
+		Tags: m.ReportTags,
+		Fields: models.Fields(map[string]interface{}{
+			"T":              int(elapsed),
+			"points_written": m.writtenN,
+			"values_written": m.writtenN * m.FieldsPerPoint,
+			"points_ps":      pThrough,
+			"values_ps":      pThrough * float64(m.FieldsPerPoint),
+			"resp_wma":       int(m.wmaLatency),
+			"resp_mean":      int(m.totalLatency) / len(m.latencyHistory) / int(time.Millisecond),
+			"resp_90":        int(m.quartileResponse(0.9) / time.Millisecond),
+			"resp_95":        int(m.quartileResponse(0.95) / time.Millisecond),
+			"resp_99":        int(m.quartileResponse(0.99) / time.Millisecond),
+		}),
+	}
+
+	var isCreating bool
+	if m.writtenN < m.SeriesN() {
+		isCreating = true
+	}
+	s.Tags["creating_series"] = fmt.Sprint(isCreating)
+	m.mu.Unlock()
+	return s
+}
+
 // runMonitor periodically prints the current status.
 func (m *Main) runMonitor(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
@@ -329,7 +412,30 @@ func (m *Main) runMonitor(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.printMonitorStats()
+			if m.ReportHost != "" {
+				m.sendMonitorStats()
+			}
 		}
+	}
+}
+
+func (m *Main) sendMonitorStats() {
+	stats := m.GatherStats()
+	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
+		Database: m.Database,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	p, err := client.NewPoint("stress", stats.Tags, stats.Fields, stats.Time)
+	if err != nil {
+		panic(err)
+	}
+	bp.AddPoint(p)
+
+	if err := m.clt.Write(bp); err != nil {
+		fmt.Fprintf(os.Stderr, "unable to report stats to Influx: %v", err)
 	}
 }
 
