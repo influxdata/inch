@@ -174,7 +174,7 @@ func (m *Main) ParseFlags(args []string) error {
 			os.Exit(1)
 		}
 
-		if _, err := m.clt.Query(client.NewQuery(fmt.Sprintf("CREATE DATABASE %q WITH DURATION %s", m.Database, m.ShardDuration), "", "")); err != nil {
+		if _, err := m.clt.Query(client.NewQuery(fmt.Sprintf(`CREATE DATABASE "ingest_benchmarks"`), "", "")); err != nil {
 			fmt.Fprintf(os.Stderr, "unable to connect to %q", m.ReportHost)
 			os.Exit(1)
 		}
@@ -419,26 +419,36 @@ func (m *Main) runMonitor(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			m.printMonitorStats()
+			if m.ReportHost != "" {
+				m.sendMonitorStats(true)
+			}
 			return
 		case <-ticker.C:
 			m.printMonitorStats()
 			if m.ReportHost != "" {
-				m.sendMonitorStats()
+				m.sendMonitorStats(false)
 			}
 		}
 	}
 }
 
-func (m *Main) sendMonitorStats() {
+func (m *Main) sendMonitorStats(final bool) {
 	stats := m.Stats()
 	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
-		Database: m.Database,
+		Database: "ingest_benchmarks",
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	p, err := client.NewPoint("stress", stats.Tags, stats.Fields, stats.Time)
+	measurement := "runtime"
+	t := stats.Time
+	if final {
+		measurement = "summary"
+		t = time.Now().UTC()
+	}
+
+	p, err := client.NewPoint(measurement, stats.Tags, stats.Fields, t)
 	if err != nil {
 		panic(err)
 	}
