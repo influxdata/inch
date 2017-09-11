@@ -376,8 +376,9 @@ type Stats struct {
 	Fields models.Fields
 }
 
-func (m *Main) GatherStats() *Stats {
+func (m *Main) Stats() *Stats {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	elapsed := time.Since(m.now).Seconds()
 	pThrough := float64(m.writtenN) / elapsed
 	s := &Stats{
@@ -406,7 +407,6 @@ func (m *Main) GatherStats() *Stats {
 
 	// Reset error count for next reporting.
 	m.currentErrors = 0
-	m.mu.Unlock()
 	return s
 }
 
@@ -430,7 +430,7 @@ func (m *Main) runMonitor(ctx context.Context) {
 }
 
 func (m *Main) sendMonitorStats() {
-	stats := m.GatherStats()
+	stats := m.Stats()
 	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
 		Database: m.Database,
 	})
