@@ -11,10 +11,14 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/influxdata/influxdb/client/v2"
+	"github.com/influxdata/influxdb/models"
 )
 
 // ErrConnectionRefused indicates that the connection to the remote server was refused.
@@ -35,13 +39,19 @@ func main() {
 
 // Main represents the main program execution.
 type Main struct {
-	mu            sync.Mutex
-	writtenN      int
-	startTime     time.Time
-	now           time.Time
-	timePerSeries int64 // How much the client is backing off due to unacceptible response times.
-	currentDelay  time.Duration
-	wmaLatency    float64
+	mu             sync.Mutex
+	writtenN       int
+	startTime      time.Time
+	now            time.Time
+	timePerSeries  int64 // How much the client is backing off due to unacceptible response times.
+	currentDelay   time.Duration
+	wmaLatency     float64
+	latencyHistory []time.Duration
+	totalLatency   time.Duration
+	currentErrors  int // The current number of errors since last reporting.
+
+	// Client to be used to report statistics to an Influx instance.
+	clt client.Client
 
 	// Decay factor used when weighting average latency returned by server.
 	alpha float64
@@ -51,6 +61,8 @@ type Main struct {
 	Stderr io.Writer
 
 	Verbose          bool
+	ReportHost       string
+	ReportTags       map[string]string
 	DryRun           bool
 	Strict           bool
 	Host             string
@@ -63,18 +75,20 @@ type Main struct {
 	BatchSize        int
 	TargetMaxLatency time.Duration
 
-	Database string
-	TimeSpan time.Duration // The length of time to span writes over.
-	Delay    time.Duration // A delay inserted in between writes.
+	Database      string
+	ShardDuration string        // Set a custom shard duration.
+	TimeSpan      time.Duration // The length of time to span writes over.
+	Delay         time.Duration // A delay inserted in between writes.
 }
 
 // NewMain returns a new instance of Main.
 func NewMain() *Main {
 	return &Main{
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		alpha:  0.5, // Weight the mean latency by 50% history / 50% latest value.
+		Stdin:          os.Stdin,
+		Stdout:         os.Stdout,
+		Stderr:         os.Stderr,
+		alpha:          0.5, // Weight the mean latency by 50% history / 50% latest value.
+		latencyHistory: make([]time.Duration, 0, 200),
 	}
 }
 
@@ -82,6 +96,8 @@ func NewMain() *Main {
 func (m *Main) ParseFlags(args []string) error {
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.Verbose, "v", false, "Verbose")
+	fs.StringVar(&m.ReportHost, "report-host", "", "Host to send metrics")
+	reportTags := fs.String("report-tags", "", "Comma separated k=v tags to report alongside metrics")
 	fs.BoolVar(&m.DryRun, "dry", false, "Dry run (maximum writer perf of inch on box)")
 	fs.BoolVar(&m.Strict, "strict", false, "Terminate process if error encountered")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
@@ -93,6 +109,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.FieldsPerPoint, "f", 1, "Fields per point")
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
+	fs.StringVar(&m.ShardDuration, "shard-duration", "7d", "Set shard duration (default 7d)")
 	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
 	fs.DurationVar(&m.Delay, "delay", 0, "Delay between writes")
 	fs.DurationVar(&m.TargetMaxLatency, "target-latency", 0, "If set inch will attempt to adapt write delay to meet target")
@@ -122,6 +139,46 @@ func (m *Main) ParseFlags(args []string) error {
 		m.Tags = append(m.Tags, v)
 	}
 
+	// Basic report tags.
+	m.ReportTags = map[string]string{
+		"stress_tool": "inch",
+		"t":           *tags,
+		"batch_size":  fmt.Sprint(m.BatchSize),
+		"p":           fmt.Sprint(m.PointsPerSeries),
+		"c":           fmt.Sprint(m.Concurrency),
+		"m":           fmt.Sprint(m.Measurements),
+		"f":           fmt.Sprint(m.FieldsPerPoint),
+		"sd":          m.ShardDuration,
+	}
+
+	// Parse report tags.
+	if *reportTags != "" {
+		for _, tagPair := range strings.Split(*reportTags, ",") {
+			tag := strings.Split(tagPair, "=")
+			if len(tag) != 2 {
+				fmt.Fprintf(os.Stderr, "invalid tag pair %q", tagPair)
+				os.Exit(1)
+			}
+			m.ReportTags[tag[0]] = tag[1]
+		}
+	}
+
+	// Setup reporting client?
+	if m.ReportHost != "" {
+		var err error
+		m.clt, err = client.NewHTTPClient(client.HTTPConfig{
+			Addr: m.ReportHost,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		if _, err := m.clt.Query(client.NewQuery(fmt.Sprintf("CREATE DATABASE %q WITH DURATION %s", m.Database, m.ShardDuration), "", "")); err != nil {
+			fmt.Fprintf(os.Stderr, "unable to connect to %q", m.ReportHost)
+			os.Exit(1)
+		}
+	}
 	return nil
 }
 
@@ -140,7 +197,7 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Total points: %d\n", m.PointN())
 	fmt.Fprintf(m.Stdout, "Total fields per point: %d\n", m.FieldsPerPoint)
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
-	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
+	fmt.Fprintf(m.Stdout, "Database: %s (Shard duration: %s)\n", m.Database, m.ShardDuration)
 	fmt.Fprintf(m.Stdout, "Write Consistency: %s\n", m.Consistency)
 
 	if m.TargetMaxLatency > 0 {
@@ -313,6 +370,46 @@ func (m *Main) generateBatches() <-chan []byte {
 	return ch
 }
 
+type Stats struct {
+	Time   time.Time
+	Tags   map[string]string
+	Fields models.Fields
+}
+
+func (m *Main) Stats() *Stats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	elapsed := time.Since(m.now).Seconds()
+	pThrough := float64(m.writtenN) / elapsed
+	s := &Stats{
+		Time: time.Unix(0, int64(time.Since(m.now))),
+		Tags: m.ReportTags,
+		Fields: models.Fields(map[string]interface{}{
+			"T":              int(elapsed),
+			"points_written": m.writtenN,
+			"values_written": m.writtenN * m.FieldsPerPoint,
+			"points_ps":      pThrough,
+			"values_ps":      pThrough * float64(m.FieldsPerPoint),
+			"write_error":    m.currentErrors,
+			"resp_wma":       int(m.wmaLatency),
+			"resp_mean":      int(m.totalLatency) / len(m.latencyHistory) / int(time.Millisecond),
+			"resp_90":        int(m.quartileResponse(0.9) / time.Millisecond),
+			"resp_95":        int(m.quartileResponse(0.95) / time.Millisecond),
+			"resp_99":        int(m.quartileResponse(0.99) / time.Millisecond),
+		}),
+	}
+
+	var isCreating bool
+	if m.writtenN < m.SeriesN() {
+		isCreating = true
+	}
+	s.Tags["creating_series"] = fmt.Sprint(isCreating)
+
+	// Reset error count for next reporting.
+	m.currentErrors = 0
+	return s
+}
+
 // runMonitor periodically prints the current status.
 func (m *Main) runMonitor(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
@@ -325,7 +422,30 @@ func (m *Main) runMonitor(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.printMonitorStats()
+			if m.ReportHost != "" {
+				m.sendMonitorStats()
+			}
 		}
+	}
+}
+
+func (m *Main) sendMonitorStats() {
+	stats := m.Stats()
+	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
+		Database: m.Database,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	p, err := client.NewPoint("stress", stats.Tags, stats.Fields, stats.Time)
+	if err != nil {
+		panic(err)
+	}
+	bp.AddPoint(p)
+
+	if err := m.clt.Write(bp); err != nil {
+		fmt.Fprintf(os.Stderr, "unable to report stats to Influx: %v", err)
 	}
 }
 
@@ -333,16 +453,31 @@ func (m *Main) printMonitorStats() {
 	writtenN := m.WrittenN()
 	elapsed := time.Since(m.now).Seconds()
 	var delay string
+	var responses string
 
 	m.mu.Lock()
 	if m.TargetMaxLatency > 0 {
-		delay = fmt.Sprintf("Writer delay currently: %s. WMA write latency: %s", m.currentDelay, time.Duration(m.wmaLatency))
+		delay = fmt.Sprintf(" | Writer delay currently: %s. WMA write latency: %s", m.currentDelay, time.Duration(m.wmaLatency))
+	}
+
+	if len(m.latencyHistory) >= 100 {
+		responses = fmt.Sprintf(" | μ: %s, 90%%: %s, 95%%: %s, 99%%: %s", m.totalLatency/time.Duration(len(m.latencyHistory)), m.quartileResponse(0.9), m.quartileResponse(0.95), m.quartileResponse(0.99))
 	}
 	m.mu.Unlock()
 
-	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec). %s\n",
+	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec)%s%s\n",
 		int(elapsed), writtenN, float64(writtenN)/elapsed, float64(m.FieldsPerPoint)*(float64(writtenN)/elapsed),
-		delay)
+		delay, responses)
+}
+
+// This is really not the best way to do this, but it will give a reasonable
+// approximation.
+func (m *Main) quartileResponse(q float64) time.Duration {
+	i := int(float64(len(m.latencyHistory))*q) - 1
+	if i < 0 || i >= len(m.latencyHistory) {
+		return time.Duration(-1) // Problem..
+	}
+	return m.latencyHistory[i]
 }
 
 // runClient executes a client to send points in a separate goroutine.
@@ -383,7 +518,7 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 // setup initializes the database.
 func (m *Main) setup() error {
 	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+m.Database))
+	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+m.Database+"+WITH+DURATION+"+m.ShardDuration))
 	if err != nil {
 		return err
 	}
@@ -417,12 +552,31 @@ func (m *Main) sendBatch(buf []byte) error {
 
 	// Return body as error if unsuccessful.
 	if resp.StatusCode != 204 {
+		m.mu.Lock()
+		m.currentErrors++
+		m.mu.Unlock()
+
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			body = []byte(err.Error())
 		}
 		return fmt.Errorf("[%d] %s", resp.StatusCode, body)
 	}
+
+	latency := time.Since(now)
+	m.mu.Lock()
+	m.totalLatency += latency
+
+	// Maintain sorted list of latencies for quantile reporting
+	i := sort.Search(len(m.latencyHistory), func(i int) bool { return m.latencyHistory[i] >= latency })
+	if i >= len(m.latencyHistory) {
+		m.latencyHistory = append(m.latencyHistory, latency)
+	} else {
+		m.latencyHistory = append(m.latencyHistory, 0)
+		copy(m.latencyHistory[i+1:], m.latencyHistory[i:])
+		m.latencyHistory[i] = latency
+	}
+	m.mu.Unlock()
 
 	// Fixed delay.
 	if m.Delay > 0 {
@@ -456,7 +610,7 @@ func (m *Main) sendBatch(buf []byte) error {
 
 	// Calculate the weighted moving average latency. We weight this response
 	// latency by 1-alpha, and the historic average by alpha.
-	m.wmaLatency = (m.alpha * m.wmaLatency) + ((1.0 - m.alpha) * (float64(time.Since(now)) - m.wmaLatency))
+	m.wmaLatency = (m.alpha * m.wmaLatency) + ((1.0 - m.alpha) * (float64(latency) - m.wmaLatency))
 
 	// Update how we adjust our latency by
 	delta := 1.0 / float64(m.Concurrency) * 0.5 * (m.wmaLatency - float64(m.TargetMaxLatency))
