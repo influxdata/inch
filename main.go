@@ -75,9 +75,10 @@ type Main struct {
 	BatchSize        int
 	TargetMaxLatency time.Duration
 
-	Database string
-	TimeSpan time.Duration // The length of time to span writes over.
-	Delay    time.Duration // A delay inserted in between writes.
+	Database      string
+	ShardDuration string        // Set a custom shard duration.
+	TimeSpan      time.Duration // The length of time to span writes over.
+	Delay         time.Duration // A delay inserted in between writes.
 }
 
 // NewMain returns a new instance of Main.
@@ -108,6 +109,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.FieldsPerPoint, "f", 1, "Fields per point")
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.Database, "db", "stress", "Database to write to")
+	fs.StringVar(&m.ShardDuration, "shard-duration", "7d", "Set shard duration (default 7d)")
 	fs.DurationVar(&m.TimeSpan, "time", 0, "Time span to spread writes over")
 	fs.DurationVar(&m.Delay, "delay", 0, "Delay between writes")
 	fs.DurationVar(&m.TargetMaxLatency, "target-latency", 0, "If set inch will attempt to adapt write delay to meet target")
@@ -146,6 +148,7 @@ func (m *Main) ParseFlags(args []string) error {
 		"c":           fmt.Sprint(m.Concurrency),
 		"m":           fmt.Sprint(m.Measurements),
 		"f":           fmt.Sprint(m.FieldsPerPoint),
+		"sd":          m.ShardDuration,
 	}
 
 	// Parse report tags.
@@ -171,7 +174,7 @@ func (m *Main) ParseFlags(args []string) error {
 			os.Exit(1)
 		}
 
-		if _, err := m.clt.Query(client.NewQuery(fmt.Sprintf("CREATE DATABASE %q", m.Database), "", "")); err != nil {
+		if _, err := m.clt.Query(client.NewQuery(fmt.Sprintf("CREATE DATABASE %q WITH DURATION %s", m.Database, m.ShardDuration), "", "")); err != nil {
 			fmt.Fprintf(os.Stderr, "unable to connect to %q", m.ReportHost)
 			os.Exit(1)
 		}
@@ -194,7 +197,7 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Total points: %d\n", m.PointN())
 	fmt.Fprintf(m.Stdout, "Total fields per point: %d\n", m.FieldsPerPoint)
 	fmt.Fprintf(m.Stdout, "Batch Size: %d\n", m.BatchSize)
-	fmt.Fprintf(m.Stdout, "Database: %s\n", m.Database)
+	fmt.Fprintf(m.Stdout, "Database: %s (Shard duration: %s)\n", m.Database, m.ShardDuration)
 	fmt.Fprintf(m.Stdout, "Write Consistency: %s\n", m.Consistency)
 
 	if m.TargetMaxLatency > 0 {

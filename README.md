@@ -45,6 +45,8 @@ Usage of inch:
     	Host to send metrics
   -report-tags string
     	Comma separated k=v tags to report alongside metrics
+  -shard-duration string
+    	Set shard duration (default 7d)
   -strict
     	Terminate process if error encountered
   -t string
