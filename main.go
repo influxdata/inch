@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -179,6 +180,25 @@ func (m *Main) ParseFlags(args []string) error {
 			os.Exit(1)
 		}
 	}
+
+	// Get product type and version and commit, if available.
+	resp, err := http.Get(strings.TrimSuffix(m.Host, "/") + "/ping")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	build := resp.Header.Get("X-Influxdb-Build")
+	if len(build) > 0 {
+		m.ReportTags["build"] = build
+	}
+
+	version := resp.Header.Get("X-Influxdb-Version")
+	if len(version) > 0 {
+		m.ReportTags["version"] = version
+	}
+
 	return nil
 }
 
@@ -370,6 +390,15 @@ func (m *Main) generateBatches() <-chan []byte {
 	return ch
 }
 
+// Vars is a subset of the data fields found at the /debug/vars endpoint.
+type Vars struct {
+	Memstats struct {
+		HeapAlloc   int
+		HeapInUse   int
+		HeapObjects int
+	} `json:"memstats"`
+}
+
 type Stats struct {
 	Time   time.Time
 	Tags   map[string]string
@@ -407,6 +436,23 @@ func (m *Main) Stats() *Stats {
 
 	// Reset error count for next reporting.
 	m.currentErrors = 0
+
+	// Add runtime stats for the remote instance.
+	var vars Vars
+	resp, err := http.Get(strings.TrimSuffix(m.Host, "/") + "/debug/vars")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return s
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&vars); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return s
+	}
+
+	s.Fields["heap_alloc"] = vars.Memstats.HeapAlloc
+	s.Fields["heap_in_use"] = vars.Memstats.HeapInUse
+	s.Fields["heap_objects"] = vars.Memstats.HeapObjects
 	return s
 }
 
