@@ -444,6 +444,7 @@ func (m *Main) Stats() *Stats {
 		fmt.Fprintln(os.Stderr, err)
 		return s
 	}
+	defer resp.Body.Close()
 
 	if err := json.NewDecoder(resp.Body).Decode(&vars); err != nil {
 		fmt.Fprintln(os.Stderr, err)
