@@ -39,6 +39,8 @@ Usage of inch:
     	Host (default "http://localhost:8086")
   -m int
     	Measurements (default 1)
+  -max-errors int
+    	Terminate process if this many errors encountered
   -p int
     	Points per series (default 100)
   -report-host string
@@ -47,8 +49,6 @@ Usage of inch:
     	Comma separated k=v tags to report alongside metrics
   -shard-duration string
     	Set shard duration (default 7d)
-  -strict
-    	Terminate process if error encountered
   -t string
     	Tag cardinality (default "10,10,10")
   -target-latency duration
