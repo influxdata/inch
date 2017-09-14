@@ -49,7 +49,8 @@ type Main struct {
 	wmaLatency     float64
 	latencyHistory []time.Duration
 	totalLatency   time.Duration
-	currentErrors  int // The current number of errors since last reporting.
+	currentErrors  int   // The current number of errors since last reporting.
+	totalErrors    int64 // The total number of errors encountered.
 
 	// Client to be used to report statistics to an Influx instance.
 	clt client.Client
@@ -61,11 +62,12 @@ type Main struct {
 	Stdout io.Writer
 	Stderr io.Writer
 
-	Verbose          bool
-	ReportHost       string
-	ReportTags       map[string]string
-	DryRun           bool
-	Strict           bool
+	Verbose    bool
+	ReportHost string
+	ReportTags map[string]string
+	DryRun     bool
+	MaxErrors  int
+
 	Host             string
 	Consistency      string
 	Concurrency      int
@@ -100,7 +102,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.StringVar(&m.ReportHost, "report-host", "", "Host to send metrics")
 	reportTags := fs.String("report-tags", "", "Comma separated k=v tags to report alongside metrics")
 	fs.BoolVar(&m.DryRun, "dry", false, "Dry run (maximum writer perf of inch on box)")
-	fs.BoolVar(&m.Strict, "strict", false, "Terminate process if error encountered")
+	fs.IntVar(&m.MaxErrors, "max-errors", 0, "Terminate process if this many errors encountered")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
 	fs.StringVar(&m.Consistency, "consistency", "any", "Write consistency (default any)")
 	fs.IntVar(&m.Concurrency, "c", 1, "Concurrency")
@@ -556,7 +558,11 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 					return
 				} else if err != nil {
 					fmt.Fprintln(m.Stderr, err)
-					if m.Strict {
+					m.mu.Lock()
+					totalErrors := m.totalErrors
+					m.mu.Unlock()
+
+					if m.MaxErrors > 0 && totalErrors >= int64(m.MaxErrors) {
 						os.Exit(1)
 					}
 					continue
@@ -611,6 +617,7 @@ func (m *Main) sendBatch(buf []byte) error {
 	if resp.StatusCode != 204 {
 		m.mu.Lock()
 		m.currentErrors++
+		m.totalErrors++
 		m.mu.Unlock()
 
 		body, err := ioutil.ReadAll(resp.Body)
