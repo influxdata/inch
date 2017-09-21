@@ -443,7 +443,7 @@ func (m *Main) Stats() *Stats {
 	var vars Vars
 	resp, err := http.Get(strings.TrimSuffix(m.Host, "/") + "/debug/vars")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// Don't log error as it can get spammy.
 		return s
 	}
 	defer resp.Body.Close()
@@ -563,6 +563,7 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 					m.mu.Unlock()
 
 					if m.MaxErrors > 0 && totalErrors >= int64(m.MaxErrors) {
+						fmt.Fprintf(m.Stderr, "Exiting due to reaching %d errors.\n", totalErrors)
 						os.Exit(1)
 					}
 					continue
@@ -619,6 +620,12 @@ func (m *Main) sendBatch(buf []byte) error {
 		m.currentErrors++
 		m.totalErrors++
 		m.mu.Unlock()
+
+		// If it looks like the server is down and we're hitting the gateway
+		// or a load balancer, then add a delay.
+		if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable {
+			time.Sleep(time.Second)
+		}
 
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
