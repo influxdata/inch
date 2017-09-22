@@ -3,11 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/influxdata/inch"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/influxdata/inch"
 )
 
 // Main represents the main program execution.
@@ -16,7 +17,7 @@ type Main struct {
 	Stdout io.Writer
 	Stderr io.Writer
 
-	inch *inch.Inch
+	inch *inch.Simulator
 }
 
 func main() {
@@ -24,12 +25,6 @@ func main() {
 
 	// parse command line flags
 	if err := m.ParseFlags(os.Args[1:]); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	// allow inch to validate its data
-	if err := m.inch.Valid(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -48,14 +43,14 @@ func NewMain() *Main {
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
-		inch:   inch.NewInch(),
+		inch:   inch.NewSimulator(),
 	}
 }
 
 func (m *Main) ParseFlags(args []string) error {
 	// ensure we have an inch
 	if m.inch == nil {
-		m.inch = inch.NewInch()
+		m.inch = inch.NewSimulator()
 	}
 
 	// set the output information
