@@ -90,16 +90,12 @@ type Simulator struct {
 }
 
 // NewMain returns a new instance of Main.
-<<<<<<< HEAD
-func NewInch() *Inch {
+func NewSimulator() *Simulator {
 	writeClient := &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},
 	}}
-=======
-func NewSimulator() *Simulator {
->>>>>>> 70a3d77... resolve the issues reported by benbjohnson
 
 	// create an inch object with reasonable defaults
 	return &Simulator{
@@ -137,17 +133,12 @@ func (sim *Simulator) Validate() error {
 	// validate reporting client is accessable
 	if sim.ReportHost != "" {
 		var err error
-<<<<<<< HEAD
-		inch.clt, err = client.NewHTTPClient(client.HTTPConfig{
-			Addr:               inch.ReportHost,
-			Username:           inch.ReportUser,
-			Password:           inch.ReportPassword,
-			InsecureSkipVerify: true})
-=======
 		sim.clt, err = client.NewHTTPClient(client.HTTPConfig{
-			Addr: sim.ReportHost,
+			Addr:               sim.ReportHost,
+			Username:           sim.ReportUser,
+			Password:           sim.ReportPassword,
+			InsecureSkipVerify: true,
 		})
->>>>>>> 70a3d77... resolve the issues reported by benbjohnson
 		if err != nil {
 			el = append(el, fmt.Errorf("failed to communicate with %q: %s", sim.ReportHost, err))
 			return el
@@ -166,10 +157,6 @@ func (sim *Simulator) Validate() error {
 	return nil
 }
 
-<<<<<<< HEAD
-// Run executes the Simulator.
-func (inch *Inch) Run() error {
-=======
 // Run executes the program.
 func (sim *Simulator) Run() error {
 	// check valid settings before starting
@@ -177,7 +164,6 @@ func (sim *Simulator) Run() error {
 	if err != nil {
 		return err
 	}
->>>>>>> 70a3d77... resolve the issues reported by benbjohnson
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -572,23 +558,18 @@ func (sim *Simulator) setup() error {
 		sim.ReportTags["version"] = version
 	}
 
-<<<<<<< HEAD
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/query", inch.Host), strings.NewReader("q=CREATE+DATABASE+"+inch.Database+"+WITH+DURATION+"+inch.ShardDuration))
-=======
-	var client http.Client
-	resp, err = client.Post(fmt.Sprintf("%s/query", sim.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+sim.Database+"+WITH+DURATION+"+sim.ShardDuration))
->>>>>>> 70a3d77... resolve the issues reported by benbjohnson
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/query", sim.Host), strings.NewReader("q=CREATE+DATABASE+"+sim.Database+"+WITH+DURATION+"+sim.ShardDuration))
 	if err != nil {
 		return err
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if inch.User != "" && inch.Password != "" {
-		req.SetBasicAuth(inch.User, inch.Password)
+	if sim.User != "" && sim.Password != "" {
+		req.SetBasicAuth(sim.User, sim.Password)
 	}
 
-	resp, err = inch.writeClient.Do(req)
+	resp, err = sim.writeClient.Do(req)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
@@ -606,22 +587,18 @@ func (sim *Simulator) sendBatch(buf []byte) error {
 
 	// Send batch.
 	now := time.Now().UTC()
-<<<<<<< HEAD
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", inch.Host, inch.Database, inch.Consistency), bytes.NewReader(buf))
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", sim.Host, sim.Database, sim.Consistency), bytes.NewReader(buf))
 	if err != nil {
 		return err
 	}
 
 	req.Header.Set("Content-Type", "text/ascii")
 
-	if inch.User != "" && inch.Password != "" {
-		req.SetBasicAuth(inch.User, inch.Password)
+	if sim.User != "" && sim.Password != "" {
+		req.SetBasicAuth(sim.User, sim.Password)
 	}
 
-	resp, err := inch.writeClient.Do(req)
-=======
-	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", sim.Host, sim.Database, sim.Consistency), "text/ascii", bytes.NewReader(buf))
->>>>>>> 70a3d77... resolve the issues reported by benbjohnson
+	resp, err := sim.writeClient.Do(req)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
 			return ErrConnectionRefused
