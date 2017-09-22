@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -55,6 +56,8 @@ type Main struct {
 	// Client to be used to report statistics to an Influx instance.
 	clt client.Client
 
+	// Client for writing and manipulating influxdb host
+	writeClient *http.Client
 	// Decay factor used when weighting average latency returned by server.
 	alpha float64
 
@@ -62,13 +65,17 @@ type Main struct {
 	Stdout io.Writer
 	Stderr io.Writer
 
-	Verbose    bool
-	ReportHost string
-	ReportTags map[string]string
-	DryRun     bool
-	MaxErrors  int
+	Verbose        bool
+	ReportHost     string
+	ReportUser     string
+	ReportPassword string
+	ReportTags     map[string]string
+	DryRun         bool
+	MaxErrors      int
 
 	Host             string
+	User             string
+	Password         string
 	Consistency      string
 	Concurrency      int
 	Measurements     int   // Number of measurements
@@ -86,12 +93,19 @@ type Main struct {
 
 // NewMain returns a new instance of Main.
 func NewMain() *Main {
+	writeClient := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}}
+
 	return &Main{
 		Stdin:          os.Stdin,
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,
 		alpha:          0.5, // Weight the mean latency by 50% history / 50% latest value.
 		latencyHistory: make([]time.Duration, 0, 200),
+		writeClient:    writeClient,
 	}
 }
 
@@ -100,10 +114,14 @@ func (m *Main) ParseFlags(args []string) error {
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.Verbose, "v", false, "Verbose")
 	fs.StringVar(&m.ReportHost, "report-host", "", "Host to send metrics")
+	fs.StringVar(&m.ReportUser, "report-user", "", "User for Host to send metrics")
+	fs.StringVar(&m.ReportPassword, "report-password", "", "Password Host to send metrics")
 	reportTags := fs.String("report-tags", "", "Comma separated k=v tags to report alongside metrics")
 	fs.BoolVar(&m.DryRun, "dry", false, "Dry run (maximum writer perf of inch on box)")
 	fs.IntVar(&m.MaxErrors, "max-errors", 0, "Terminate process if this many errors encountered")
 	fs.StringVar(&m.Host, "host", "http://localhost:8086", "Host")
+	fs.StringVar(&m.User, "user", "", "Host User")
+	fs.StringVar(&m.Password, "password", "", "Host Password")
 	fs.StringVar(&m.Consistency, "consistency", "any", "Write consistency (default any)")
 	fs.IntVar(&m.Concurrency, "c", 1, "Concurrency")
 	fs.IntVar(&m.Measurements, "m", 1, "Measurements")
@@ -170,7 +188,10 @@ func (m *Main) ParseFlags(args []string) error {
 	if m.ReportHost != "" {
 		var err error
 		m.clt, err = client.NewHTTPClient(client.HTTPConfig{
-			Addr: m.ReportHost,
+			Addr:               m.ReportHost,
+			Username:           m.ReportUser,
+			Password:           m.ReportPassword,
+			InsecureSkipVerify: true,
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -580,8 +601,18 @@ func (m *Main) runClient(ctx context.Context, ch <-chan []byte) {
 
 // setup initializes the database.
 func (m *Main) setup() error {
-	var client http.Client
-	resp, err := client.Post(fmt.Sprintf("%s/query", m.Host), "application/x-www-form-urlencoded", strings.NewReader("q=CREATE+DATABASE+"+m.Database+"+WITH+DURATION+"+m.ShardDuration))
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/query", m.Host), strings.NewReader("q=CREATE+DATABASE+"+m.Database+"+WITH+DURATION+"+m.ShardDuration))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	if m.User != "" && m.Password != "" {
+		req.SetBasicAuth(m.User, m.Password)
+	}
+
+	resp, err := m.writeClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -602,9 +633,20 @@ func (m *Main) sendBatch(buf []byte) error {
 	}
 
 	// Send batch.
-	var client http.Client
 	now := time.Now().UTC()
-	resp, err := client.Post(fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", m.Host, m.Database, m.Consistency), "text/ascii", bytes.NewReader(buf))
+
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", m.Host, m.Database, m.Consistency), bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "text/ascii")
+
+	if m.User != "" && m.Password != "" {
+		req.SetBasicAuth(m.User, m.Password)
+	}
+
+	resp, err := m.writeClient.Do(req)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
 			return ErrConnectionRefused
