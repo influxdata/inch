@@ -37,7 +37,7 @@ func (el ErrorList) Error() string {
 	return msg
 }
 
-// Main represents the main program execution.
+// Simulator represents the main program execution.
 type Simulator struct {
 	mu             sync.Mutex
 	writtenN       int
@@ -89,7 +89,7 @@ type Simulator struct {
 	Delay         time.Duration // A delay inserted in between writes.
 }
 
-// NewMain returns a new instance of Main.
+// NewSimulator returns a new instance of Main.
 func NewSimulator() *Simulator {
 	writeClient := &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -116,7 +116,7 @@ func NewSimulator() *Simulator {
 	}
 }
 
-// ParseFlags parses the command line flags.
+// Validate parses the command line flags.
 func (sim *Simulator) Validate() error {
 	var el ErrorList
 
@@ -360,12 +360,15 @@ type Vars struct {
 	} `json:"memstats"`
 }
 
+// Stats stores statistics in a format that can be sent to an InfluxDB server
+// using tags and fields.
 type Stats struct {
 	Time   time.Time
 	Tags   map[string]string
 	Fields models.Fields
 }
 
+// Stats returns up-to-date statistics about the current Simulator.
 func (sim *Simulator) Stats() *Stats {
 	sim.mu.Lock()
 	defer sim.mu.Unlock()
@@ -481,10 +484,12 @@ func (sim *Simulator) printMonitorStats() {
 	if len(sim.latencyHistory) >= 100 {
 		responses = fmt.Sprintf(" | μ: %s, 90%%: %s, 95%%: %s, 99%%: %s", sim.totalLatency/time.Duration(len(sim.latencyHistory)), sim.quartileResponse(0.9), sim.quartileResponse(0.95), sim.quartileResponse(0.99))
 	}
+	currentErrors := sim.currentErrors
 	sim.mu.Unlock()
 
-	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec)%s%s\n",
+	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec) errors: %d%s%s\n",
 		int(elapsed), writtenN, float64(writtenN)/elapsed, float64(sim.FieldsPerPoint)*(float64(writtenN)/elapsed),
+		currentErrors,
 		delay, responses)
 }
 
@@ -614,17 +619,21 @@ func (sim *Simulator) sendBatch(buf []byte) error {
 		sim.totalErrors++
 		sim.mu.Unlock()
 
-		// If it looks like the server is down and we're hitting the gateway
-		// or a load balancer, then add a delay.
-		if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable {
-			time.Sleep(time.Second)
-		}
-
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			body = []byte(err.Error())
 		}
-		return fmt.Errorf("[%d] %s", resp.StatusCode, body)
+
+		// If it looks like the server is down and we're hitting the gateway
+		// or a load balancer, then add a delay.
+		switch resp.StatusCode {
+		case http.StatusBadGateway, http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout:
+			time.Sleep(time.Second)
+		}
+
+		// Flatten any error message.
+		return fmt.Errorf("[%d] %s", resp.StatusCode, strings.Replace(string(body), "\n", " ", -1))
 	}
 
 	latency := time.Since(now)
