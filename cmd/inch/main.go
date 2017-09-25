@@ -86,11 +86,8 @@ func (m *Main) ParseFlags(args []string) error {
 	}
 
 	// Parse tag cardinalities.
-	for i, s := range strings.Split(*tags, ",") {
-		if i == 0 {
-			// We're overriding default tag cardinalities
-			m.inch.Tags = []int{}
-		}
+	m.inch.Tags = []int{}
+	for _, s := range strings.Split(*tags, ",") {
 		v, err := strconv.Atoi(s)
 		if err != nil {
 			return fmt.Errorf("cannot parse tag cardinality: %s", s)
