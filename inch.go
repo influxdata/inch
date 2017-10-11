@@ -155,14 +155,14 @@ func (s *Simulator) Validate() error {
 }
 
 // Run executes the program.
-func (s *Simulator) Run() error {
+func (s *Simulator) Run(ctx context.Context) error {
 	// check valid settings before starting
 	err := s.Validate()
 	if err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Print settings.
