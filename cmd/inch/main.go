@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -30,7 +31,7 @@ func main() {
 	}
 
 	// run inch
-	if err := m.inch.Run(); err != nil {
+	if err := m.inch.Run(context.Background()); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
