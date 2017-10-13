@@ -371,6 +371,10 @@ func (s *Simulator) Stats() *Stats {
 	defer s.mu.Unlock()
 	elapsed := time.Since(s.now).Seconds()
 	pThrough := float64(s.writtenN) / elapsed
+	respMean := 0
+	if len(s.latencyHistory) > 0 {
+		respMean = int(s.totalLatency) / len(s.latencyHistory) / int(time.Millisecond)
+	}
 	stats := &Stats{
 		Time: time.Unix(0, int64(time.Since(s.now))),
 		Tags: s.ReportTags,
@@ -382,7 +386,7 @@ func (s *Simulator) Stats() *Stats {
 			"values_ps":      pThrough * float64(s.FieldsPerPoint),
 			"write_error":    s.currentErrors,
 			"resp_wma":       int(s.wmaLatency),
-			"resp_mean":      int(s.totalLatency) / len(s.latencyHistory) / int(time.Millisecond),
+			"resp_mean":      respMean,
 			"resp_90":        int(s.quartileResponse(0.9) / time.Millisecond),
 			"resp_95":        int(s.quartileResponse(0.95) / time.Millisecond),
 			"resp_99":        int(s.quartileResponse(0.99) / time.Millisecond),
