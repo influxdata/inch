@@ -10,7 +10,7 @@ cardinalities.
 To install, simply `go get` from the command line:
 
 ```sh
-$ go get github.com/influxdata/inch
+$ go get github.com/influxdata/inch/cmd/inch
 ```
 
 
