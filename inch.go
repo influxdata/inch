@@ -40,6 +40,7 @@ type Simulator struct {
 	mu             sync.Mutex
 	writtenN       int
 	startTime      time.Time
+	baseTime       time.Time
 	now            time.Time
 	timePerSeries  int64 // How much the client is backing off due to unacceptible response times.
 	currentDelay   time.Duration
@@ -83,6 +84,7 @@ type Simulator struct {
 
 	Database      string
 	ShardDuration string        // Set a custom shard duration.
+	StartTime     string        // Set a custom start time.
 	TimeSpan      time.Duration // The length of time to span writes over.
 	Delay         time.Duration // A delay inserted in between writes.
 }
@@ -196,7 +198,17 @@ func (s *Simulator) Run(ctx context.Context) error {
 
 	// Record start time.
 	s.now = time.Now().UTC()
-	s.startTime = s.now
+
+	s.baseTime = s.now
+	if s.StartTime != "" {
+		if t, err := time.Parse(time.RFC3339, s.StartTime); err != nil {
+			return err
+		} else {
+			s.baseTime = t.UTC()
+		}
+	}
+	s.startTime = s.baseTime
+
 	if s.TimeSpan != 0 {
 		absTimeSpan := int64(math.Abs(float64(s.TimeSpan)))
 		s.timePerSeries = absTimeSpan / int64(s.PointN())
@@ -208,7 +220,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	}
 	fmt.Fprintf(s.Stdout, "Start time: %s\n", s.startTime)
 	if s.TimeSpan < 0 {
-		fmt.Fprintf(s.Stdout, "Approx End time: %s\n", time.Now().UTC())
+		fmt.Fprintf(s.Stdout, "Approx End time: %s\n", s.baseTime)
 	} else if s.TimeSpan > 0 {
 		fmt.Fprintf(s.Stdout, "Approx End time: %s\n", s.startTime.Add(s.TimeSpan).UTC())
 	} else {
