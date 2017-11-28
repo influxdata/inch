@@ -78,6 +78,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.inch.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.inch.Database, "db", "stress", "Database to write to")
 	fs.StringVar(&m.inch.ShardDuration, "shard-duration", "7d", "Set shard duration (default 7d)")
+	fs.StringVar(&m.inch.StartTime, "start-time", "", "Set start time (default now)")
 	fs.DurationVar(&m.inch.TimeSpan, "time", 0, "Time span to spread writes over")
 	fs.DurationVar(&m.inch.Delay, "delay", 0, "Delay between writes")
 	fs.DurationVar(&m.inch.TargetMaxLatency, "target-latency", 0, "If set inch will attempt to adapt write delay to meet target")
