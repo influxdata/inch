@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/influxdata/influxdb/client/v2"
@@ -48,6 +49,7 @@ type Simulator struct {
 	wmaLatency     float64
 	latencyHistory []time.Duration
 	totalLatency   time.Duration
+	latestValues   int64 // Number of values written during latest period (usually 1 second).
 	currentErrors  int   // The current number of errors since last reporting.
 	totalErrors    int64 // The total number of errors encountered.
 
@@ -455,25 +457,38 @@ func (s *Simulator) runMonitor(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	last := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
-			s.printMonitorStats()
+			d := int64(time.Since(last) / time.Second)
+			if d == 0 {
+				d = 1
+			}
+			throughput := atomic.SwapInt64(&s.latestValues, 0) / d
+			s.printMonitorStats(throughput)
 			if s.ReportHost != "" {
-				s.sendMonitorStats(true)
+				s.sendMonitorStats(true, throughput)
 			}
 			return
-		case <-ticker.C:
-			s.printMonitorStats()
-			if s.ReportHost != "" {
-				s.sendMonitorStats(false)
+		case t := <-ticker.C:
+			d := int64(time.Since(last) / time.Second)
+			if d == 0 {
+				d = 1
 			}
+			throughput := atomic.SwapInt64(&s.latestValues, 0) / d
+			s.printMonitorStats(throughput)
+			if s.ReportHost != "" {
+				s.sendMonitorStats(false, throughput)
+			}
+			last = t // Update time seen most recently.
 		}
 	}
 }
 
-func (s *Simulator) sendMonitorStats(final bool) {
+func (s *Simulator) sendMonitorStats(final bool, latestThroughput int64) {
 	stats := s.Stats()
+	stats.Fields["current_values_ps"] = latestThroughput
 	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
 		Database: "ingest_benchmarks",
 	})
@@ -499,7 +514,7 @@ func (s *Simulator) sendMonitorStats(final bool) {
 	}
 }
 
-func (s *Simulator) printMonitorStats() {
+func (s *Simulator) printMonitorStats(latestThroughput int64) {
 	writtenN := s.WrittenN()
 	elapsed := time.Since(s.now).Seconds()
 	var delay string
@@ -516,8 +531,8 @@ func (s *Simulator) printMonitorStats() {
 	currentErrors := s.currentErrors
 	s.mu.Unlock()
 
-	fmt.Printf("T=%08d %d points written (%0.1f pt/sec | %0.1f val/sec) errors: %d%s%s\n",
-		int(elapsed), writtenN, float64(writtenN)/elapsed, float64(s.FieldsPerPoint)*(float64(writtenN)/elapsed),
+	fmt.Printf("T=%08d %d points written. Total throughput: %0.1f pt/sec | %0.1f val/sec. Current throughput: %d val/sec. Errors: %d%s%s\n",
+		int(elapsed), writtenN, float64(writtenN)/elapsed, float64(s.FieldsPerPoint)*(float64(writtenN)/elapsed), latestThroughput,
 		currentErrors,
 		delay, responses)
 }
@@ -568,6 +583,9 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 			s.mu.Lock()
 			s.writtenN += s.BatchSize
 			s.mu.Unlock()
+
+			// Update current throughput
+			atomic.AddInt64(&s.latestValues, int64(s.BatchSize))
 		}
 	}
 }
