@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -299,9 +300,14 @@ func (s *Simulator) generateBatches() <-chan []byte {
 	ch := make(chan []byte, 10)
 
 	go func() {
-		var buf bytes.Buffer
 		values := make([]int, len(s.Tags))
 		lastWrittenTotal := s.WrittenN()
+
+		// For generating tag string.
+		var tags []byte
+
+		// For writing space between tags and field.
+		space := []byte(" ")
 
 		// Generate field string.
 		var fields []byte
@@ -313,21 +319,31 @@ func (s *Simulator) generateBatches() <-chan []byte {
 			fields = append(fields, []byte(fmt.Sprintf("v%d=1%s", i, delim))...)
 		}
 
-		for i := 0; i < s.PointN(); i++ {
-			// Write point.
-			buf.Write([]byte(fmt.Sprintf("m%d", i%s.Measurements)))
-			for j, value := range values {
-				fmt.Fprintf(&buf, ",tag%d=value%d", j, value)
-			}
+		// Size internal buffer to consider mx+tags+ +fields.
+		buf := bytes.NewBuffer(make([]byte, 0, 2+len(tags)+1+len(fields)))
 
-			// Write fields
-			buf.Write(append([]byte(" "), fields...))
+		// Write points.
+		var lastMN int
+		lastM := []byte("m0")
+		for i := 0; i < s.PointN(); i++ {
+			lastMN = i % s.Measurements
+			lastM = append(lastM[:1], []byte(strconv.Itoa(lastMN))...)
+			buf.Write(lastM) // Write measurement
+
+			for j, value := range values {
+				tags = append(tags, fmt.Sprintf(",tag%d=value%d", j, value)...)
+			}
+			buf.Write(tags)
+			tags = tags[:0] // Reset slice but use backing array.
+
+			buf.Write(space)  // Write fields.
+			buf.Write(fields) // Write a space.
 
 			if s.timePerSeries != 0 {
 				delta := time.Duration(int64(lastWrittenTotal+i) * s.timePerSeries)
 				buf.Write([]byte(fmt.Sprintf(" %d\n", s.startTime.Add(delta).UnixNano())))
 			} else {
-				fmt.Fprint(&buf, "\n")
+				fmt.Fprint(buf, "\n")
 			}
 
 			// Increment next tag value.
