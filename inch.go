@@ -2,6 +2,7 @@ package inch
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -84,6 +85,7 @@ type Simulator struct {
 	FieldsPerPoint   int
 	BatchSize        int
 	TargetMaxLatency time.Duration
+	Gzip             bool
 
 	Database      string
 	ShardDuration string        // Set a custom shard duration.
@@ -549,6 +551,9 @@ func (s *Simulator) quartileResponse(q float64) time.Duration {
 
 // runClient executes a client to send points in a separate goroutine.
 func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
+	b := bytes.NewBuffer(make([]byte, 0, 1024))
+	g := gzip.NewWriter(b)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -562,7 +567,32 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 			// Keep trying batch until successful.
 			// Stop client if it cannot connect.
 			for {
-				if err := s.sendBatch(buf); err == ErrConnectionRefused {
+				b.Reset()
+
+				if s.Gzip {
+					g.Reset(b)
+
+					if _, err := g.Write(buf); err != nil {
+						fmt.Fprintln(s.Stderr, err)
+						fmt.Fprintf(s.Stderr, "Exiting due to fatal errors: %v.\n", err)
+						os.Exit(1)
+					}
+
+					if err := g.Close(); err != nil {
+						fmt.Fprintln(s.Stderr, err)
+						fmt.Fprintf(s.Stderr, "Exiting due to fatal errors: %v.\n", err)
+						os.Exit(1)
+					}
+				} else {
+					_, err := io.Copy(b, bytes.NewReader(buf))
+					if err != nil {
+						fmt.Fprintln(s.Stderr, err)
+						fmt.Fprintf(s.Stderr, "Exiting due to fatal errors: %v.\n", err)
+						os.Exit(1)
+					}
+				}
+
+				if err := s.sendBatch(b.Bytes()); err == ErrConnectionRefused {
 					return
 				} else if err != nil {
 					fmt.Fprintln(s.Stderr, err)
@@ -645,6 +675,10 @@ func (s *Simulator) sendBatch(buf []byte) error {
 	}
 
 	req.Header.Set("Content-Type", "text/ascii")
+	if s.Gzip {
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Content-Length", strconv.Itoa(len(buf)))
+	}
 
 	if s.User != "" && s.Password != "" {
 		req.SetBasicAuth(s.User, s.Password)
