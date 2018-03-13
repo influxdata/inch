@@ -71,6 +71,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.StringVar(&m.inch.Password, "password", "", "Host Password")
 	fs.StringVar(&m.inch.Consistency, "consistency", "any", "Write consistency (default any)")
 	fs.IntVar(&m.inch.Concurrency, "c", 1, "Concurrency")
+	fs.Uint64Var(&m.inch.VHosts, "vhosts", 0, "Virtual Hosts")
 	fs.IntVar(&m.inch.Measurements, "m", 1, "Measurements")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
 	fs.IntVar(&m.inch.PointsPerSeries, "p", 100, "Points per series")
@@ -100,14 +101,15 @@ func (m *Main) ParseFlags(args []string) error {
 
 	// Basic report tags.
 	m.inch.ReportTags = map[string]string{
-		"stress_tool": "inch",
-		"t":           *tags,
-		"batch_size":  fmt.Sprint(m.inch.BatchSize),
-		"p":           fmt.Sprint(m.inch.PointsPerSeries),
-		"c":           fmt.Sprint(m.inch.Concurrency),
-		"m":           fmt.Sprint(m.inch.Measurements),
-		"f":           fmt.Sprint(m.inch.FieldsPerPoint),
-		"sd":          m.inch.ShardDuration,
+		"stress_tool":   "inch",
+		"t":             *tags,
+		"batch_size":    fmt.Sprint(m.inch.BatchSize),
+		"p":             fmt.Sprint(m.inch.PointsPerSeries),
+		"c":             fmt.Sprint(m.inch.Concurrency),
+		"m":             fmt.Sprint(m.inch.Measurements),
+		"f":             fmt.Sprint(m.inch.FieldsPerPoint),
+		"virtual_hosts": fmt.Sprint(m.inch.VHosts),
+		"sd":            m.inch.ShardDuration,
 	}
 
 	// Parse report tags.
