@@ -41,7 +41,8 @@ func (el ErrorList) Error() string {
 // Simulator represents the main program execution.
 type Simulator struct {
 	mu             sync.Mutex
-	writtenN       int
+	writtenN       int    // number of values written.
+	batchesWritten uint64 // number of batches written.
 	startTime      time.Time
 	baseTime       time.Time
 	now            time.Time
@@ -79,8 +80,9 @@ type Simulator struct {
 	Password         string
 	Consistency      string
 	Concurrency      int
-	Measurements     int   // Number of measurements
-	Tags             []int // tag cardinalities
+	Measurements     int    // Number of measurements
+	Tags             []int  // tag cardinalities
+	VHosts           uint64 // Simulate multiple virtual hosts
 	PointsPerSeries  int
 	FieldsPerPoint   int
 	BatchSize        int
@@ -112,6 +114,7 @@ func NewSimulator() *Simulator {
 		Concurrency:     1,
 		Measurements:    1,
 		Tags:            []int{10, 10, 10},
+		VHosts:          0,
 		PointsPerSeries: 100,
 		FieldsPerPoint:  1,
 		BatchSize:       5000,
@@ -175,6 +178,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	// Print settings.
 	fmt.Fprintf(s.Stdout, "Host: %s\n", s.Host)
 	fmt.Fprintf(s.Stdout, "Concurrency: %d\n", s.Concurrency)
+	fmt.Fprintf(s.Stdout, "Virtual Hosts: %d\n", s.VHosts)
 	fmt.Fprintf(s.Stdout, "Measurements: %d\n", s.Measurements)
 	fmt.Fprintf(s.Stdout, "Tag cardinalities: %+v\n", s.Tags)
 	fmt.Fprintf(s.Stdout, "Points per series: %d\n", s.PointsPerSeries)
@@ -609,6 +613,8 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 				break
 			}
 
+			atomic.AddUint64(&s.batchesWritten, 1)
+
 			// Increment batch size.
 			s.mu.Lock()
 			s.writtenN += s.BatchSize
@@ -672,6 +678,12 @@ func (s *Simulator) sendBatch(buf []byte) error {
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", s.Host, s.Database, s.Consistency), bytes.NewReader(buf))
 	if err != nil {
 		return err
+	}
+
+	var hostID uint64
+	if s.VHosts > 0 {
+		hostID = atomic.LoadUint64(&s.batchesWritten) % s.VHosts
+		req.Header.Set("X-Influxdb-Host", fmt.Sprintf("tenant%d.example.com", hostID))
 	}
 
 	req.Header.Set("Content-Type", "text/ascii")
