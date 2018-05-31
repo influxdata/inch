@@ -46,7 +46,7 @@ type Simulator struct {
 	startTime      time.Time
 	baseTime       time.Time
 	now            time.Time
-	timePerSeries  int64 // How much the client is backing off due to unacceptible response times.
+	timePerSeries  int64 // How much the client is backing off due to unacceptable response times.
 	currentDelay   time.Duration
 	wmaLatency     float64
 	latencyHistory []time.Duration
@@ -61,8 +61,13 @@ type Simulator struct {
 	// Client to be used to report statistics to an Influx instance.
 	clt client.Client
 
+	SetupFn func(s *Simulator) error
+
 	// Client for writing and manipulating influxdb host
 	writeClient *http.Client
+
+	// Function for writing batches of points.
+	WriteBatch func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error)
 
 	// Decay factor used when weighting average latency returned by server.
 	alpha float64
@@ -106,10 +111,11 @@ func NewSimulator() *Simulator {
 
 	// Create an Simulator object with reasonable defaults.
 	return &Simulator{
-		alpha:          0.5, // Weight the mean latency by 50% history / 50% latest value.
-		latencyHistory: make([]time.Duration, 0, 200),
-		writeClient:    writeClient,
-
+		alpha:           0.5, // Weight the mean latency by 50% history / 50% latest value.
+		latencyHistory:  make([]time.Duration, 0, 200),
+		SetupFn:         defaultSetupFn,
+		writeClient:     writeClient,
+		WriteBatch:      defaultWriteBatch,
 		Consistency:     "any",
 		Concurrency:     1,
 		Measurements:    1,
@@ -201,7 +207,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	}
 
 	// Initialize database.
-	if err := s.setup(); err != nil {
+	if err := s.SetupFn(s); err != nil {
 		return err
 	}
 
@@ -627,8 +633,7 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 }
 
 // setup pulls the build and version from the server and initializes the database.
-func (s *Simulator) setup() error {
-
+var defaultSetupFn = func(s *Simulator) error {
 	// Validate that we can connect to the test host
 	resp, err := http.Get(strings.TrimSuffix(s.Host, "/") + "/ping")
 	if err != nil {
@@ -666,18 +671,12 @@ func (s *Simulator) setup() error {
 	return nil
 }
 
-// sendBatch writes a batch to the server. Continually retries until successful.
-func (s *Simulator) sendBatch(buf []byte) error {
-	// Don't send the batch anywhere..
-	if s.DryRun {
-		return nil
-	}
-
-	// Send batch.
-	now := time.Now().UTC()
+// defaultWriteBatch is the default implementation of the WriteBatch function.
+// It's the caller's responsibility to close the response body.
+var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error) {
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", s.Host, s.Database, s.Consistency), bytes.NewReader(buf))
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 
 	var hostID uint64
@@ -699,34 +698,52 @@ func (s *Simulator) sendBatch(buf []byte) error {
 	resp, err := s.writeClient.Do(req)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
-			return ErrConnectionRefused
+			return 0, nil, ErrConnectionRefused
 		}
+		return 0, nil, err
+	}
+	return resp.StatusCode, resp.Body, nil
+}
+
+// sendBatch writes a batch to the server. Continually retries until successful.
+func (s *Simulator) sendBatch(buf []byte) error {
+	// Don't send the batch anywhere..
+	if s.DryRun {
+		return nil
+	}
+
+	// Send batch.
+	now := time.Now().UTC()
+	code, bodyreader, err := s.WriteBatch(s, buf)
+	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 
 	// Return body as error if unsuccessful.
-	if resp.StatusCode != 204 {
+	if code != 204 {
 		s.mu.Lock()
 		s.currentErrors++
 		s.totalErrors++
 		s.mu.Unlock()
 
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := ioutil.ReadAll(bodyreader)
 		if err != nil {
 			body = []byte(err.Error())
 		}
 
+		// Close the body.
+		bodyreader.Close()
+
 		// If it looks like the server is down and we're hitting the gateway
 		// or a load balancer, then add a delay.
-		switch resp.StatusCode {
+		switch code {
 		case http.StatusBadGateway, http.StatusServiceUnavailable,
 			http.StatusGatewayTimeout:
 			time.Sleep(time.Second)
 		}
 
 		// Flatten any error message.
-		return fmt.Errorf("[%d] %s", resp.StatusCode, strings.Replace(string(body), "\n", " ", -1))
+		return fmt.Errorf("[%d] %s", code, strings.Replace(string(body), "\n", " ", -1))
 	}
 
 	latency := time.Since(now)
