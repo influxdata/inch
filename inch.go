@@ -38,6 +38,20 @@ func (el ErrorList) Error() string {
 	return msg
 }
 
+// Default prefixes and lengths for parts of the series keys written.
+const (
+	measurementPrefix        = "m"
+	defaultMeasurementLength = len(measurementPrefix) + 1 // m0
+
+	tagKeyPrefix          = "tag"
+	defaultTagKeyLength   = len(tagKeyPrefix) + 1 // tag0
+	tagValuePrefix        = "value"
+	defaultTagValueLength = len(tagValuePrefix) + 1 // value0
+
+	fieldKeyPrefix        = "v"
+	defaultFieldKeyLength = len(fieldKeyPrefix) + 1 // v0
+)
+
 // Simulator represents the main program execution.
 type Simulator struct {
 	mu             sync.Mutex
@@ -80,19 +94,23 @@ type Simulator struct {
 	DryRun         bool
 	MaxErrors      int
 
-	Host             string
-	User             string
-	Password         string
-	Consistency      string
-	Concurrency      int
-	Measurements     int    // Number of measurements
-	Tags             []int  // tag cardinalities
-	VHosts           uint64 // Simulate multiple virtual hosts
-	PointsPerSeries  int
-	FieldsPerPoint   int
-	BatchSize        int
-	TargetMaxLatency time.Duration
-	Gzip             bool
+	Host              string
+	User              string
+	Password          string
+	Consistency       string
+	Concurrency       int
+	Measurements      int    // Number of measurements
+	MeasurementLength int    // Minimum length of measurement
+	Tags              []int  // tag cardinalities
+	TagKeyLength      int    // Minimum length of tag keys
+	TagValueLength    int    // Minimum length of tag values
+	VHosts            uint64 // Simulate multiple virtual hosts
+	PointsPerSeries   int
+	FieldsPerPoint    int
+	FieldKeyLength    int // Minimum length of field keys
+	BatchSize         int
+	TargetMaxLatency  time.Duration
+	Gzip              bool
 
 	Database      string
 	ShardDuration string        // Set a custom shard duration.
@@ -111,21 +129,25 @@ func NewSimulator() *Simulator {
 
 	// Create an Simulator object with reasonable defaults.
 	return &Simulator{
-		alpha:           0.5, // Weight the mean latency by 50% history / 50% latest value.
-		latencyHistory:  make([]time.Duration, 0, 200),
-		SetupFn:         defaultSetupFn,
-		writeClient:     writeClient,
-		WriteBatch:      defaultWriteBatch,
-		Consistency:     "any",
-		Concurrency:     1,
-		Measurements:    1,
-		Tags:            []int{10, 10, 10},
-		VHosts:          0,
-		PointsPerSeries: 100,
-		FieldsPerPoint:  1,
-		BatchSize:       5000,
-		Database:        "db",
-		ShardDuration:   "7d",
+		alpha:             0.5, // Weight the mean latency by 50% history / 50% latest value.
+		latencyHistory:    make([]time.Duration, 0, 200),
+		SetupFn:           defaultSetupFn,
+		writeClient:       writeClient,
+		WriteBatch:        defaultWriteBatch,
+		Consistency:       "any",
+		Concurrency:       1,
+		Measurements:      1,
+		MeasurementLength: 2, // m0
+		Tags:              []int{10, 10, 10},
+		TagKeyLength:      4, // tag0
+		TagValueLength:    6, // value0
+		VHosts:            0,
+		PointsPerSeries:   100,
+		FieldsPerPoint:    1,
+		FieldKeyLength:    2, //v0
+		BatchSize:         5000,
+		Database:          "db",
+		ShardDuration:     "7d",
 	}
 }
 
@@ -194,6 +216,23 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Batch Size: %d\n", s.BatchSize)
 	fmt.Fprintf(s.Stdout, "Database: %s (Shard duration: %s)\n", s.Database, s.ShardDuration)
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
+
+	if s.MeasurementLength < defaultMeasurementLength {
+		return fmt.Errorf("Minimum measurement length is %d", defaultMeasurementLength)
+	} else if s.TagKeyLength < defaultTagKeyLength {
+		return fmt.Errorf("Minimum tag key length is %d", defaultTagKeyLength)
+	} else if s.TagValueLength < defaultTagValueLength {
+		return fmt.Errorf("Minimum tag value length is %d", defaultTagValueLength)
+	} else if s.FieldKeyLength < defaultFieldKeyLength {
+		return fmt.Errorf("Minimum field key length is %d", defaultFieldKeyLength)
+	}
+
+	// Reduce the desired lengths of Key components, since we already have prefixes
+	// in place.
+	s.MeasurementLength -= defaultMeasurementLength
+	s.TagKeyLength -= defaultTagKeyLength
+	s.TagValueLength -= defaultTagValueLength
+	s.FieldKeyLength -= defaultFieldKeyLength
 
 	if s.TargetMaxLatency > 0 {
 		fmt.Fprintf(s.Stdout, "Adaptive latency on. Max target: %s\n", s.TargetMaxLatency)
@@ -326,26 +365,73 @@ func (s *Simulator) generateBatches() <-chan []byte {
 		// Generate field string.
 		var fields []byte
 		for i := 0; i < s.FieldsPerPoint; i++ {
+			field := fieldKeyPrefix + "%d"
+
+			// Append 0 to the field key if we need longer field keys.
+			for i := 0; i < s.FieldKeyLength; i++ {
+				field += "0"
+			}
+
 			var delim string
 			if i < s.FieldsPerPoint-1 {
 				delim = ","
 			}
-			fields = append(fields, []byte(fmt.Sprintf("v%d=1%s", i, delim))...)
+			field = field + "=1%s"
+			fields = append(fields, []byte(fmt.Sprintf(field, i, delim))...)
 		}
 
-		// Size internal buffer to consider mx+tags+ +fields.
-		buf := bytes.NewBuffer(make([]byte, 0, 2+len(tags)+1+len(fields)))
+		// Size internal buffer to consider measurement+tags+fields.
+		mlen := len(measurementPrefix) + 1 + s.MeasurementLength
+		tlen := len(tagKeyPrefix) + 1 + // tag0
+			s.TagKeyLength + // (extra length required on key)
+			1 + // =
+			len(tagValuePrefix) + 1 + // value0
+			s.TagValueLength + // (extra length required on tag value)
+			1 // , to next tag pair
+
+		buf := bytes.NewBuffer(make([]byte, 0, mlen+(tlen*len(tags))+len(fields)))
+
+		// Determine measurement name
+		var lastMN int
+		lastM := []byte(measurementPrefix + "0")
+		var msuffix []byte
+		if s.MeasurementLength > 0 {
+			msuffix = make([]byte, s.MeasurementLength)
+			for i := 0; i < len(msuffix); i++ {
+				msuffix[i] = byte('0')
+			}
+			lastM = append(lastM, msuffix...)
+		}
+
+		// Determine tag key and value names
+		tkey := tagKeyPrefix + "%d"
+		for i := 0; i < s.TagKeyLength; i++ {
+			tkey = tkey + "0"
+		}
+
+		tval := tagValuePrefix + "%d"
+		for i := 0; i < s.TagValueLength; i++ {
+			tval = tval + "0"
+		}
+		tpair := fmt.Sprintf(",%s=%s", tkey, tval)
 
 		// Write points.
-		var lastMN int
-		lastM := []byte("m0")
 		for i := 0; i < s.PointN(); i++ {
-			lastMN = i % s.Measurements
-			lastM = append(lastM[:1], []byte(strconv.Itoa(lastMN))...)
+			nextMN := i % s.Measurements
+			if nextMN != lastMN {
+				// Rewrite the measurement name
+				lastMN = nextMN
+				lastM = append(lastM[:len(lastM)-1], []byte(strconv.Itoa(lastMN))...)
+				// Append extra measurement suffix if necessary.
+				if len(msuffix) > 0 {
+					lastM = append(lastM, msuffix...)
+				}
+			}
+
 			buf.Write(lastM) // Write measurement
 
 			for j, value := range values {
-				tags = append(tags, fmt.Sprintf(",tag%d=value%d", j, value)...)
+				tags = append(tags, fmt.Sprintf(tpair, j, value)...)
 			}
 			buf.Write(tags)
 			tags = tags[:0] // Reset slice but use backing array.

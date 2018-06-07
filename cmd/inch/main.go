@@ -32,6 +32,7 @@ func main() {
 
 	// run inch
 	if err := m.inch.Run(context.Background()); err != nil {
+		fmt.Println()
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -73,9 +74,13 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.inch.Concurrency, "c", 1, "Concurrency")
 	fs.Uint64Var(&m.inch.VHosts, "vhosts", 0, "Virtual Hosts")
 	fs.IntVar(&m.inch.Measurements, "m", 1, "Measurements")
+	fs.IntVar(&m.inch.MeasurementLength, "m-len", 2, "Measurement name length (min 2)")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
+	fs.IntVar(&m.inch.TagKeyLength, "tag-key-len", 4, "Tag Key length (min 4)")
+	fs.IntVar(&m.inch.TagValueLength, "tag-val-len", 6, "Tag Value length (min 6)")
 	fs.IntVar(&m.inch.PointsPerSeries, "p", 100, "Points per series")
 	fs.IntVar(&m.inch.FieldsPerPoint, "f", 1, "Fields per point")
+	fs.IntVar(&m.inch.FieldKeyLength, "f-len", 2, "Field Key length (min 2)")
 	fs.IntVar(&m.inch.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.inch.Database, "db", "stress", "Database to write to")
 	fs.StringVar(&m.inch.ShardDuration, "shard-duration", "7d", "Set shard duration (default 7d)")
