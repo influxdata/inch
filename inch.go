@@ -90,6 +90,7 @@ type Simulator struct {
 	VHosts           uint64 // Simulate multiple virtual hosts
 	PointsPerSeries  int
 	FieldsPerPoint   int
+	FieldPrefix      string
 	BatchSize        int
 	TargetMaxLatency time.Duration
 	Gzip             bool
@@ -123,6 +124,7 @@ func NewSimulator() *Simulator {
 		VHosts:          0,
 		PointsPerSeries: 100,
 		FieldsPerPoint:  1,
+		FieldPrefix:     "v0",
 		BatchSize:       5000,
 		Database:        "db",
 		ShardDuration:   "7d",
@@ -330,7 +332,13 @@ func (s *Simulator) generateBatches() <-chan []byte {
 			if i < s.FieldsPerPoint-1 {
 				delim = ","
 			}
-			fields = append(fields, []byte(fmt.Sprintf("v%d=1%s", i, delim))...)
+
+			// First field doesn't have a number incremented.
+			pair := fmt.Sprintf("%s=1%s", s.FieldPrefix, delim)
+			if i > 0 {
+				pair = fmt.Sprintf("%s%d=1%s", s.FieldPrefix, i, delim)
+			}
+			fields = append(fields, []byte(pair)...)
 		}
 
 		// Size internal buffer to consider mx+tags+ +fields.
