@@ -75,6 +75,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.inch.Measurements, "m", 1, "Measurements")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
 	fs.IntVar(&m.inch.PointsPerSeries, "p", 100, "Points per series")
+	fs.StringVar(&m.inch.FieldPrefix, "field-prefix", "v0", "Field key prefix")
 	fs.IntVar(&m.inch.FieldsPerPoint, "f", 1, "Fields per point")
 	fs.IntVar(&m.inch.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.inch.Database, "db", "stress", "Database to write to")
