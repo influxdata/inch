@@ -551,8 +551,10 @@ func (s *Simulator) printMonitorStats(latestThroughput int64) {
 	currentErrors := s.currentErrors
 	s.mu.Unlock()
 
-	fmt.Printf("T=%08d %d points written. Total throughput: %0.1f pt/sec | %0.1f val/sec. Current throughput: %d val/sec. Errors: %d%s%s\n",
-		int(elapsed), writtenN, float64(writtenN)/elapsed, float64(s.FieldsPerPoint)*(float64(writtenN)/elapsed), latestThroughput,
+	percentComplete := int(float32(writtenN) / float32(s.PointN()) * 100)
+
+	fmt.Printf("T=%08d %d points written (%d%%). Total throughput: %0.1f pt/sec | %0.1f val/sec. Current throughput: %d val/sec. Errors: %d%s%s\n",
+		int(elapsed), writtenN, percentComplete, float64(writtenN)/elapsed, float64(s.FieldsPerPoint)*(float64(writtenN)/elapsed), latestThroughput,
 		currentErrors,
 		delay, responses)
 }
