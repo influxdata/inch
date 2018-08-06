@@ -60,6 +60,7 @@ func (m *Main) ParseFlags(args []string) error {
 
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.inch.Verbose, "v", false, "Verbose")
+	fs.BoolVar(&m.inch.Print, "print", false, "If true all line-protocol will be written to stdout")
 	fs.StringVar(&m.inch.ReportHost, "report-host", "", "Host to send metrics")
 	fs.StringVar(&m.inch.ReportUser, "report-user", "", "User for Host to send metrics")
 	fs.StringVar(&m.inch.ReportPassword, "report-password", "", "Password Host to send metrics")

@@ -73,6 +73,7 @@ type Simulator struct {
 	alpha float64
 
 	Verbose        bool
+	Print          bool
 	ReportHost     string
 	ReportUser     string
 	ReportPassword string
@@ -197,6 +198,11 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Database: %s (Shard duration: %s)\n", s.Database, s.ShardDuration)
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
 
+	if s.Print {
+		s.SetupFn = noopSetupFn
+		s.WriteBatch = printWriteBatch
+	}
+
 	if s.TargetMaxLatency > 0 {
 		fmt.Fprintf(s.Stdout, "Adaptive latency on. Max target: %s\n", s.TargetMaxLatency)
 	} else if s.Delay > 0 {
@@ -294,7 +300,7 @@ func (s *Simulator) TagsN() int {
 
 // SeriesN returns the total number of series to write.
 func (s *Simulator) SeriesN() int {
-	return s.TagsN() * s.Measurements
+	return s.TagsN()
 }
 
 // PointN returns the total number of points to write.
@@ -711,6 +717,21 @@ var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.
 		return 0, nil, err
 	}
 	return resp.StatusCode, resp.Body, nil
+}
+
+// noopSetupFn does no setup.
+var noopSetupFn = func(s *Simulator) error { return nil }
+
+// printWriteBatch provides a WriteBatch implementation that simply prints the write data to stdout.
+var printWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error) {
+	n, err := s.Stdout.Write(buf)
+	// n, err := io.Copy(s.Stdout, bytes.NewReader(buf))
+	if err != nil {
+		return http.StatusInternalServerError, ioutil.NopCloser(&bytes.Buffer{}), err
+	} else if got, exp := int(n), len(buf); got != exp {
+		return http.StatusInternalServerError, ioutil.NopCloser(&bytes.Buffer{}), fmt.Errorf("only %d bytes of %d written", got, exp)
+	}
+	return http.StatusNoContent, nil, nil
 }
 
 // sendBatch writes a batch to the server. Continually retries until successful.
