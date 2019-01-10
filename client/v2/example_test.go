@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/influxdata/idpe/client/v2"
+	"github.com/influxdata/inch/client/v2"
 )
 
 // Create a new client

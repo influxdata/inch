@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/influxdata/inch/client/v2"
-	"github.com/influxdata/platform/models"
+	"github.com/influxdata/influxdb/models"
 )
 
 // ErrConnectionRefused indicates that the connection to the remote server was refused.
