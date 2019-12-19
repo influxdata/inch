@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/influxdata/inch/client/v2"
-	"github.com/influxdata/influxdb/models"
+	"github.com/influxdata/influxdb1-client/models"
+	"github.com/influxdata/influxdb1-client/v2"
 )
 
 // ErrConnectionRefused indicates that the connection to the remote server was refused.
