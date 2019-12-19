@@ -1,5 +1,5 @@
 module github.com/influxdata/inch
 
-require github.com/influxdata/influxdb v0.0.0-20190806162752-e922c8a26f9b
+go 1.12
 
-replace github.com/influxdata/platform => /dev/null
+require github.com/influxdata/influxdb1-client v0.0.0-20191209144304-8bf82d3c094d
