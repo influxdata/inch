@@ -60,6 +60,8 @@ func (m *Main) ParseFlags(args []string) error {
 
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.inch.Verbose, "v", false, "Verbose")
+	fs.BoolVar(&m.inch.V2, "v2", false, "Writing into InfluxDB 2.0")
+	fs.StringVar(&m.inch.Token, "token", "", "InfluxDB 2.0 Authorization token")
 	fs.StringVar(&m.inch.ReportHost, "report-host", "", "Host to send metrics")
 	fs.StringVar(&m.inch.ReportUser, "report-user", "", "User for Host to send metrics")
 	fs.StringVar(&m.inch.ReportPassword, "report-password", "", "Password Host to send metrics")
