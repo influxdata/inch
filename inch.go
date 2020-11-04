@@ -71,7 +71,8 @@ type Simulator struct {
 
 	// Decay factor used when weighting average latency returned by server.
 	alpha float64
-
+	V2	bool
+	Token 	string
 	Verbose        bool
 	ReportHost     string
 	ReportUser     string
@@ -196,6 +197,13 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Batch Size: %d\n", s.BatchSize)
 	fmt.Fprintf(s.Stdout, "Database: %s (Shard duration: %s)\n", s.Database, s.ShardDuration)
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
+	fmt.Fprintf(s.Stdout, "Writing into InfluxDB 2.0: %t\n", s.V2)
+	fmt.Fprintf(s.Stdout, "InfluxDB 2.0 Authorization Token: %s\n", s.Token)
+
+	if s.V2 == true && s.Token == "" {
+		fmt.Println("ERROR: Need to provide a token in ordere to write into InfluxDB 2.0")
+		return err
+	}
 
 	if s.TargetMaxLatency > 0 {
 		fmt.Fprintf(s.Stdout, "Adaptive latency on. Max target: %s\n", s.TargetMaxLatency)
@@ -667,11 +675,18 @@ var defaultSetupFn = func(s *Simulator) error {
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if s.V2 == true {
+		req.Header.Set("Authorization", "Token " + s.Token)
+	}
 
 	if s.User != "" && s.Password != "" {
 		req.SetBasicAuth(s.User, s.Password)
 	}
-
+	if s.Verbose == true {
+		for name, headers := range req.Header {
+			fmt.Printf("%s:%s\n", name, headers)
+		}
+	}
 	resp, err = s.writeClient.Do(req)
 
 	if resp.StatusCode != http.StatusOK {
@@ -687,6 +702,10 @@ var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", s.Host, s.Database, s.Consistency), bytes.NewReader(buf))
 	if err != nil {
 		return 0, nil, err
+	}
+
+	if s.V2 == true {
+		req.Header.Set("Authorization", "Token " + s.Token)
 	}
 
 	var hostID uint64
