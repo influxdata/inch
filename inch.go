@@ -70,9 +70,9 @@ type Simulator struct {
 	WriteBatch func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error)
 
 	// Decay factor used when weighting average latency returned by server.
-	alpha float64
-	V2	bool
-	Token 	string
+	alpha          float64
+	V2             bool
+	Token          string
 	Verbose        bool
 	ReportHost     string
 	ReportUser     string
@@ -676,7 +676,7 @@ var defaultSetupFn = func(s *Simulator) error {
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if s.V2 == true {
-		req.Header.Set("Authorization", "Token " + s.Token)
+		req.Header.Set("Authorization", "Token "+s.Token)
 	}
 
 	if s.User != "" && s.Password != "" {
@@ -705,7 +705,7 @@ var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.
 	}
 
 	if s.V2 == true {
-		req.Header.Set("Authorization", "Token " + s.Token)
+		req.Header.Set("Authorization", "Token "+s.Token)
 	}
 
 	var hostID uint64
