@@ -12,6 +12,7 @@ import (
 	"io/ioutil"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -21,7 +22,7 @@ import (
 	"time"
 
 	"github.com/influxdata/influxdb1-client/models"
-	"github.com/influxdata/influxdb1-client/v2"
+	client "github.com/influxdata/influxdb1-client/v2"
 )
 
 // ErrConnectionRefused indicates that the connection to the remote server was refused.
@@ -68,6 +69,7 @@ type Simulator struct {
 
 	// Function for writing batches of points.
 	WriteBatch func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error)
+	DeleteBatch func(s *Simulator, minTime time.Time, maxTime time.Time) (statusCode int, body io.ReadCloser, err error)
 
 	// Decay factor used when weighting average latency returned by server.
 	alpha          float64
@@ -101,8 +103,16 @@ type Simulator struct {
 	StartTime     string        // Set a custom start time.
 	TimeSpan      time.Duration // The length of time to span writes over.
 	Delay         time.Duration // A delay inserted in between writes.
+	Delete		  bool
 }
 
+type buffer []byte
+
+type pointsBuffer struct {
+	buffer
+	MinTime time.Time
+	MaxTime time.Time
+}
 // NewSimulator returns a new instance of Simulator.
 func NewSimulator() *Simulator {
 	writeClient := &http.Client{Transport: &http.Transport{
@@ -118,6 +128,7 @@ func NewSimulator() *Simulator {
 		SetupFn:         defaultSetupFn,
 		writeClient:     writeClient,
 		WriteBatch:      defaultWriteBatch,
+		DeleteBatch:     defaultDeleteBatch,
 		Consistency:     "any",
 		Concurrency:     1,
 		Measurements:    1,
@@ -199,6 +210,8 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
 	fmt.Fprintf(s.Stdout, "Writing into InfluxDB 2.0: %t\n", s.V2)
 	fmt.Fprintf(s.Stdout, "InfluxDB 2.0 Authorization Token: %s\n", s.Token)
+	fmt.Fprintf(s.Stdout, "Simultaneous deletion: %v\n", s.Delete)
+
 
 	if s.V2 == true && s.Token == "" {
 		fmt.Println("ERROR: Need to provide a token in ordere to write into InfluxDB 2.0")
@@ -320,10 +333,12 @@ func (s *Simulator) BatchN() int {
 }
 
 // generateBatches returns a channel for streaming batches.
-func (s *Simulator) generateBatches() <-chan []byte {
-	ch := make(chan []byte, 10)
+func (s *Simulator) generateBatches() <-chan pointsBuffer {
+	ch := make(chan pointsBuffer, s.Concurrency * 10)
 
 	go func() {
+		minTime := s.startTime
+		var maxTime time.Time
 		values := make([]int, len(s.Tags))
 		lastWrittenTotal := s.WrittenN()
 
@@ -371,9 +386,11 @@ func (s *Simulator) generateBatches() <-chan []byte {
 
 			if s.timePerSeries != 0 {
 				delta := time.Duration(int64(lastWrittenTotal+i) * s.timePerSeries)
-				buf.Write([]byte(fmt.Sprintf(" %d\n", s.startTime.Add(delta).UnixNano())))
+				maxTime = s.startTime.Add(delta)
+				buf.Write([]byte(fmt.Sprintf(" %d\n", maxTime.UnixNano())))
 			} else {
 				fmt.Fprint(buf, "\n")
+				maxTime = time.Now()
 			}
 
 			// Increment next tag value.
@@ -389,14 +406,23 @@ func (s *Simulator) generateBatches() <-chan []byte {
 
 			// Start new batch, if necessary.
 			if i > 0 && i%s.BatchSize == 0 {
-				ch <- copyBytes(buf.Bytes())
+				ch <- pointsBuffer {
+					MinTime: minTime,
+					MaxTime: maxTime,
+					buffer: copyBytes(buf.Bytes()),
+				}
 				buf.Reset()
+				minTime = maxTime.Add(time.Duration(1))
 			}
 		}
 
 		// Add final batch.
 		if buf.Len() > 0 {
-			ch <- copyBytes(buf.Bytes())
+			ch <- pointsBuffer {
+				buffer: copyBytes(buf.Bytes()),
+				MinTime: minTime,
+				MaxTime: maxTime,
+			}
 		}
 
 		// Close channel.
@@ -578,11 +604,12 @@ func (s *Simulator) quartileResponse(q float64) time.Duration {
 }
 
 // runClient executes a client to send points in a separate goroutine.
-func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
+func (s *Simulator) runClient(ctx context.Context, ch <-chan pointsBuffer) {
+	var minTime time.Time
 	b := bytes.NewBuffer(make([]byte, 0, 1024))
 	g := gzip.NewWriter(b)
 
-	for {
+	for i := 0 ; true; i++ {
 		select {
 		case <-ctx.Done():
 			return
@@ -592,7 +619,26 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 				return
 			}
 
-			// Keep trying batch until successful.
+			if s.Delete && i % 2 == 1 {
+				go func() {
+					if err := s.deleteBatch(minTime, buf.MaxTime); err == ErrConnectionRefused {
+						return
+					} else if err != nil {
+						fmt.Fprintln(s.Stderr, err)
+						s.mu.Lock()
+						totalErrors := s.totalErrors
+						s.mu.Unlock()
+
+						if s.MaxErrors > 0 && totalErrors >= int64(s.MaxErrors) {
+							fmt.Fprintf(s.Stderr, "Exiting due to reaching %d errors.\n", totalErrors)
+							os.Exit(1)
+						}
+					}
+				}()
+			} else {
+					minTime = buf.MinTime
+			}
+				// Keep trying batch until successful.
 			// Stop client if it cannot connect.
 			for {
 				b.Reset()
@@ -600,7 +646,7 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 				if s.Gzip {
 					g.Reset(b)
 
-					if _, err := g.Write(buf); err != nil {
+					if _, err := g.Write(buf.buffer); err != nil {
 						fmt.Fprintln(s.Stderr, err)
 						fmt.Fprintf(s.Stderr, "Exiting due to fatal errors: %v.\n", err)
 						os.Exit(1)
@@ -612,7 +658,7 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 						os.Exit(1)
 					}
 				} else {
-					_, err := io.Copy(b, bytes.NewReader(buf))
+					_, err := io.Copy(b, bytes.NewReader(buf.buffer))
 					if err != nil {
 						fmt.Fprintln(s.Stderr, err)
 						fmt.Fprintf(s.Stderr, "Exiting due to fatal errors: %v.\n", err)
@@ -649,6 +695,7 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 		}
 	}
 }
+
 
 // setup pulls the build and version from the server and initializes the database.
 var defaultSetupFn = func(s *Simulator) error {
@@ -696,6 +743,39 @@ var defaultSetupFn = func(s *Simulator) error {
 	return nil
 }
 
+// defaultDeleteBatch is the default implementation of the DeleteBatch function.
+// It's the caller's responsibility to close the response body.
+var defaultDeleteBatch = func(s *Simulator, minTime time.Time, maxTime time.Time) (statusCode int, body io.ReadCloser, err error) {
+	delStatement := url.Values{"q": []string{fmt.Sprintf("DELETE FROM /m[0-9]+/ WHERE time > '%s' AND time < '%s'", minTime.Format(time.RFC3339Nano), maxTime.Format(time.RFC3339Nano))}}.Encode()
+	req, err := http.NewRequest("POST",
+		fmt.Sprintf("%s/query?db=%s", s.Host, s.Database),
+		bytes.NewReader([]byte(delStatement)))
+	if err != nil {
+		return 0, nil, err
+	}
+
+	var hostID uint64
+	if s.VHosts > 0 {
+		hostID = atomic.LoadUint64(&s.batchesWritten) % s.VHosts
+		req.Header.Set("X-Influxdb-Host", fmt.Sprintf("tenant%d.example.com", hostID))
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	if s.User != "" && s.Password != "" {
+		req.SetBasicAuth(s.User, s.Password)
+	}
+
+	resp, err := s.writeClient.Do(req)
+	if err != nil {
+		if strings.Contains(err.Error(), "connection refused") {
+			return 0, nil, ErrConnectionRefused
+		}
+		return 0, nil, err
+	}
+	return resp.StatusCode, resp.Body, nil
+}
+
 // defaultWriteBatch is the default implementation of the WriteBatch function.
 // It's the caller's responsibility to close the response body.
 var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error) {
@@ -732,6 +812,40 @@ var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.
 		return 0, nil, err
 	}
 	return resp.StatusCode, resp.Body, nil
+}
+
+// deleteBatch writes a batch to the server. Continually retries until successful.
+func (s *Simulator) deleteBatch(minTime, maxTime time.Time) error {
+	// Don't send the batch anywhere...
+	if s.DryRun {
+		return nil
+	}
+
+	// delete batch.
+	code, bodyReader, err := s.DeleteBatch(s, minTime, maxTime)
+	if err != nil {
+		return err
+	}
+
+	// Return body as error if unsuccessful.
+	if code != 200 {
+		s.mu.Lock()
+		s.currentErrors++
+		s.totalErrors++
+		s.mu.Unlock()
+
+		body, err := ioutil.ReadAll(bodyReader)
+		if err != nil {
+			body = []byte(err.Error())
+		}
+
+		// Close the body.
+		bodyReader.Close()
+		// Flatten any error message.
+		return fmt.Errorf("[%d] %s", code, strings.Replace(string(body), "\n", " ", -1))
+	} else {
+		return bodyReader.Close()
+	}
 }
 
 // sendBatch writes a batch to the server. Continually retries until successful.
