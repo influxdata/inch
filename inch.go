@@ -44,6 +44,7 @@ type Simulator struct {
 	mu             sync.Mutex
 	writtenN       int    // number of values written.
 	batchesWritten uint64 // number of batches written.
+	deletes		   int //number of DELETE calls
 	startTime      time.Time
 	baseTime       time.Time
 	now            time.Time
@@ -583,12 +584,14 @@ func (s *Simulator) printMonitorStats(latestThroughput int64) {
 		responses = fmt.Sprintf(" | μ: %s, 90%%: %s, 95%%: %s, 99%%: %s", s.totalLatency/time.Duration(len(s.latencyHistory)), s.quartileResponse(0.9), s.quartileResponse(0.95), s.quartileResponse(0.99))
 	}
 	currentErrors := s.currentErrors
+	currentDeletes := s.deletes
 	s.mu.Unlock()
 
 	percentComplete := int(float32(writtenN) / float32(s.PointN()) * 100)
 
-	fmt.Printf("T=%08d %d points written (%d%%). Total throughput: %0.1f pt/sec | %0.1f val/sec. Current throughput: %d val/sec. Errors: %d%s%s\n",
+	fmt.Printf("T=%08d %d points written (%d%%). Total throughput: %0.1f pt/sec | %0.1f val/sec. Current throughput: %d val/sec. Deletes: %d. Errors: %d%s%s\n",
 		int(elapsed), writtenN, percentComplete, float64(writtenN)/elapsed, float64(s.FieldsPerPoint)*(float64(writtenN)/elapsed), latestThroughput,
+		currentDeletes,
 		currentErrors,
 		delay, responses)
 }
@@ -633,6 +636,10 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan pointsBuffer) {
 							fmt.Fprintf(s.Stderr, "Exiting due to reaching %d errors.\n", totalErrors)
 							os.Exit(1)
 						}
+					} else {
+						s.mu.Lock()
+						s.deletes++
+						s.mu.Unlock()
 					}
 				}()
 			} else {
