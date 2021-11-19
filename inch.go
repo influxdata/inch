@@ -627,7 +627,7 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan pointsBuffer) {
 					if err := s.deleteBatch(minTime, buf.MaxTime); err == ErrConnectionRefused {
 						return
 					} else if err != nil {
-						fmt.Fprintln(s.Stderr, err)
+						fmt.Fprintf(s.Stderr, "delete: %v\n", err)
 						s.mu.Lock()
 						totalErrors := s.totalErrors
 						s.mu.Unlock()
@@ -676,7 +676,7 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan pointsBuffer) {
 				if err := s.sendBatch(b.Bytes()); err == ErrConnectionRefused {
 					return
 				} else if err != nil {
-					fmt.Fprintln(s.Stderr, err)
+					fmt.Fprintf(s.Stderr, "write: %v\n", err)
 					s.mu.Lock()
 					totalErrors := s.totalErrors
 					s.mu.Unlock()
