@@ -80,6 +80,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.StringVar(&m.inch.FieldPrefix, "field-prefix", "v0", "Field key prefix")
 	fs.IntVar(&m.inch.FieldsPerPoint, "f", 1, "Fields per point")
 	fs.BoolVar(&m.inch.RandomizeFields, "randomize-fields", false, "Randomize field values")
+	fs.BoolVar(&m.inch.Multiwrite, "multiwrite", false, "One write per field instead of one write per point")
 	fs.IntVar(&m.inch.BatchSize, "b", 5000, "Batch size")
 	fs.StringVar(&m.inch.Database, "db", "stress", "Database to write to")
 	fs.StringVar(&m.inch.ShardDuration, "shard-duration", "7d", "Set shard duration (default 7d)")
@@ -120,6 +121,7 @@ func (m *Main) ParseFlags(args []string) error {
 		"randomize_fields": fmt.Sprint(m.inch.RandomizeFields),
 		"virtual_hosts":    fmt.Sprint(m.inch.VHosts),
 		"sd":               m.inch.ShardDuration,
+		"mw":               fmt.Sprint(m.inch.Multiwrite),
 	}
 
 	// Parse report tags.
