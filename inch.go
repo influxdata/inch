@@ -93,6 +93,8 @@ type Simulator struct {
 	PointsPerSeries  int
 	FieldsPerPoint   int
 	RandomizeFields  bool
+	Multiwrite       bool
+	WritesPerPoint   int
 	FieldPrefix      string
 	BatchSize        int
 	TargetMaxLatency time.Duration
@@ -128,6 +130,8 @@ func NewSimulator() *Simulator {
 		PointsPerSeries: 100,
 		FieldsPerPoint:  1,
 		RandomizeFields: false,
+		Multiwrite:      false,
+		WritesPerPoint:  1,
 		FieldPrefix:     "v0",
 		BatchSize:       5000,
 		Database:        "db",
@@ -198,6 +202,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Total points: %d\n", s.PointN())
 	fmt.Fprintf(s.Stdout, "Total fields per point: %d\n", s.FieldsPerPoint)
 	fmt.Fprintf(s.Stdout, "Randomized field values: %t\n", s.RandomizeFields)
+	fmt.Fprintf(s.Stdout, "Multiple writes per point: %t\n", s.Multiwrite)
 	fmt.Fprintf(s.Stdout, "Batch Size: %d\n", s.BatchSize)
 	fmt.Fprintf(s.Stdout, "Database: %s (Shard duration: %s)\n", s.Database, s.ShardDuration)
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
@@ -314,29 +319,19 @@ func (s *Simulator) PointN() int {
 	return int(s.PointsPerSeries) * s.SeriesN()
 }
 
-// BatchN returns the total number of batches.
-func (s *Simulator) BatchN() int {
-	n := s.PointN() / s.BatchSize
-	if s.PointN()%s.BatchSize != 0 {
-		n++
-	}
-	return n
-}
+func (s *Simulator) makeField(val int) []string {
+	fields := make([]string, 0, s.FieldsPerPoint)
 
-func (s *Simulator) makeField(val int) []byte {
-	var fields []byte
 	for i := 0; i < s.FieldsPerPoint; i++ {
-		var delim string
-		if i < s.FieldsPerPoint-1 {
-			delim = ","
-		}
-
 		// First field doesn't have a number incremented.
-		pair := fmt.Sprintf("%s=%d%s", s.FieldPrefix, val, delim)
+		pair := fmt.Sprintf("%s=%d", s.FieldPrefix, val)
 		if i > 0 {
-			pair = fmt.Sprintf("%s%d=%d%s", s.FieldPrefix, i, val, delim)
+			pair = fmt.Sprintf("%s%d=%d", s.FieldPrefix, i, val)
 		}
-		fields = append(fields, []byte(pair)...)
+		fields = append(fields, pair)
+	}
+	if !s.Multiwrite {
+		fields = []string{strings.Join(fields, ",")}
 	}
 	return fields
 }
@@ -349,14 +344,8 @@ func (s *Simulator) generateBatches() <-chan []byte {
 		values := make([]int, len(s.Tags))
 		lastWrittenTotal := s.WrittenN()
 
-		// For generating tag string.
-		var tags []byte
-
-		// For writing space between tags and field.
-		space := []byte(" ")
-
 		// Generate field strings
-		var fields [][]byte
+		var fields [][]string
 		maxFieldVal := 1
 		if s.RandomizeFields {
 			maxFieldVal = 10000
@@ -366,37 +355,45 @@ func (s *Simulator) generateBatches() <-chan []byte {
 		}
 
 		// Size internal buffer to consider mx+tags+ +fields.
-		buf := bytes.NewBuffer(make([]byte, 0, 2+len(tags)+1+len(fields)))
+		buf := bytes.NewBuffer(make([]byte, 0, 2+len(values)+1+len(fields)))
 
 		// Write points.
 		var lastMN int
 		lastM := []byte("m0")
 		fieldRandomize := rand.New(rand.NewSource(1234))
+		var tags []byte
+
+		if s.Multiwrite {
+			s.WritesPerPoint = s.FieldsPerPoint
+			s.BatchSize /= s.WritesPerPoint
+		}
+
 		for i := 0; i < s.PointN(); i++ {
 			lastMN = i % s.Measurements
 			lastM = append(lastM[:1], []byte(strconv.Itoa(lastMN))...)
-			buf.Write(lastM) // Write measurement
-
+			tags = tags[:0] // Reset slice but use backing array.
 			for j, value := range values {
 				tags = append(tags, fmt.Sprintf(",tag%d=value%d", j, value)...)
 			}
-			buf.Write(tags)
-			tags = tags[:0] // Reset slice but use backing array.
 
-			buf.Write(space) // Write a space.
-
-			// Write all fields.
+			fieldValueIndex := 0
 			if s.RandomizeFields {
-				buf.Write(fields[fieldRandomize.Intn(maxFieldVal)])
-			} else {
-				buf.Write(fields[0])
+				fieldValueIndex = fieldRandomize.Intn(maxFieldVal)
 			}
 
+			var delta time.Duration
 			if s.timePerSeries != 0 {
-				delta := time.Duration(int64(lastWrittenTotal+i) * s.timePerSeries)
-				buf.Write([]byte(fmt.Sprintf(" %d\n", s.startTime.Add(delta).UnixNano())))
+				delta = time.Duration(int64(lastWrittenTotal+i) * s.timePerSeries)
 			} else {
-				fmt.Fprint(buf, "\n")
+				delta = time.Duration(int64(lastWrittenTotal + i))
+				if soFar := time.Since(s.startTime); delta < soFar {
+					delta = soFar
+				}
+			}
+			timestamp := s.startTime.Add(delta).UnixNano()
+
+			for f := 0; f < s.WritesPerPoint; f++ {
+				s.formatWrites(buf, lastM, tags, fields[fieldValueIndex][f], timestamp)
 			}
 
 			// Increment next tag value.
@@ -409,7 +406,6 @@ func (s *Simulator) generateBatches() <-chan []byte {
 					continue
 				}
 			}
-
 			// Start new batch, if necessary.
 			if i > 0 && i%s.BatchSize == 0 {
 				ch <- copyBytes(buf.Bytes())
@@ -427,6 +423,16 @@ func (s *Simulator) generateBatches() <-chan []byte {
 	}()
 
 	return ch
+}
+
+var space []byte = []byte(" ")
+
+func (s *Simulator) formatWrites(buf *bytes.Buffer, measurement []byte, tags []byte, fieldValues string, timestamp int64) {
+	buf.Write(measurement) // Write measurement
+	buf.Write(tags)
+	buf.Write(space) // Write a space.
+	buf.WriteString(fieldValues)
+	buf.WriteString(fmt.Sprintf(" %d\n", timestamp))
 }
 
 // Vars is a subset of the data fields found at the /debug/vars endpoint.
