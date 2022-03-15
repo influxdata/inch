@@ -93,7 +93,7 @@ type Simulator struct {
 	PointsPerSeries  int
 	FieldsPerPoint   int
 	RandomizeFields  bool
-	Multiwrite       bool
+	OneFieldPerLine  bool
 	WritesPerPoint   int
 	FieldPrefix      string
 	BatchSize        int
@@ -130,7 +130,7 @@ func NewSimulator() *Simulator {
 		PointsPerSeries: 100,
 		FieldsPerPoint:  1,
 		RandomizeFields: false,
-		Multiwrite:      false,
+		OneFieldPerLine: false,
 		WritesPerPoint:  1,
 		FieldPrefix:     "v0",
 		BatchSize:       5000,
@@ -202,7 +202,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Total points: %d\n", s.PointN())
 	fmt.Fprintf(s.Stdout, "Total fields per point: %d\n", s.FieldsPerPoint)
 	fmt.Fprintf(s.Stdout, "Randomized field values: %t\n", s.RandomizeFields)
-	fmt.Fprintf(s.Stdout, "Multiple writes per point: %t\n", s.Multiwrite)
+	fmt.Fprintf(s.Stdout, "Multiple writes per point: %t\n", s.OneFieldPerLine)
 	fmt.Fprintf(s.Stdout, "Batch Size: %d\n", s.BatchSize)
 	fmt.Fprintf(s.Stdout, "Database: %s (Shard duration: %s)\n", s.Database, s.ShardDuration)
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
@@ -330,7 +330,7 @@ func (s *Simulator) makeField(val int) []string {
 		}
 		fields = append(fields, pair)
 	}
-	if !s.Multiwrite {
+	if !s.OneFieldPerLine {
 		fields = []string{strings.Join(fields, ",")}
 	}
 	return fields
@@ -363,7 +363,7 @@ func (s *Simulator) generateBatches() <-chan []byte {
 		fieldRandomize := rand.New(rand.NewSource(1234))
 		var tags []byte
 
-		if s.Multiwrite {
+		if s.OneFieldPerLine {
 			s.WritesPerPoint = s.FieldsPerPoint
 			s.BatchSize /= s.WritesPerPoint
 		}
