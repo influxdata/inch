@@ -94,6 +94,7 @@ type Simulator struct {
 	FieldsPerPoint   int
 	RandomizeFields  bool
 	Multiwrite       bool
+	WritesPerPoint   int
 	FieldPrefix      string
 	BatchSize        int
 	TargetMaxLatency time.Duration
@@ -129,6 +130,8 @@ func NewSimulator() *Simulator {
 		PointsPerSeries: 100,
 		FieldsPerPoint:  1,
 		RandomizeFields: false,
+		Multiwrite:      false,
+		WritesPerPoint:  1,
 		FieldPrefix:     "v0",
 		BatchSize:       5000,
 		Database:        "db",
@@ -316,15 +319,6 @@ func (s *Simulator) PointN() int {
 	return int(s.PointsPerSeries) * s.SeriesN()
 }
 
-// BatchN returns the total number of batches.
-func (s *Simulator) BatchN() int {
-	n := s.PointN() / s.BatchSize
-	if s.PointN()%s.BatchSize != 0 {
-		n++
-	}
-	return n
-}
-
 func (s *Simulator) makeField(val int) []string {
 	fields := make([]string, 0, s.FieldsPerPoint)
 
@@ -368,10 +362,10 @@ func (s *Simulator) generateBatches() <-chan []byte {
 		lastM := []byte("m0")
 		fieldRandomize := rand.New(rand.NewSource(1234))
 		var tags []byte
-		var writesPerPoint = 1
 
 		if s.Multiwrite {
-			writesPerPoint = s.FieldsPerPoint
+			s.WritesPerPoint = s.FieldsPerPoint
+			s.BatchSize /= s.WritesPerPoint
 		}
 
 		for i := 0; i < s.PointN(); i++ {
@@ -398,7 +392,7 @@ func (s *Simulator) generateBatches() <-chan []byte {
 			}
 			timestamp := s.startTime.Add(delta).UnixNano()
 
-			for f := 0; f < writesPerPoint; f++ {
+			for f := 0; f < s.WritesPerPoint; f++ {
 				s.formatWrites(buf, lastM, tags, fields[fieldValueIndex][f], timestamp)
 			}
 
