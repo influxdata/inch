@@ -682,7 +682,7 @@ func (s *Simulator) runClient(ctx context.Context, ch <-chan []byte) {
 // setup pulls the build and version from the server and initializes the database.
 var defaultSetupFn = func(s *Simulator) error {
 	// Validate that we can connect to the test host
-	resp, err := http.Get(strings.TrimSuffix(s.Host, "/") + "/ping")
+	resp, err := s.writeClient.Get(strings.TrimSuffix(s.Host, "/") + "/ping")
 	if err != nil {
 		return fmt.Errorf("unable to connect to %q: %s", s.Host, err)
 	}
