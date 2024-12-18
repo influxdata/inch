@@ -25,6 +25,8 @@ import (
 	client "github.com/influxdata/influxdb1-client/v2"
 )
 
+var precisionMultiplier = map[string]int64{"ns": 1, "u": 1000, "ms": 1000000, "s": 1000000000, "m": 60000000000, "h": 3600000000000}
+
 // ErrConnectionRefused indicates that the connection to the remote server was refused.
 var ErrConnectionRefused = errors.New("connection refused")
 
@@ -99,6 +101,7 @@ type Simulator struct {
 	BatchSize        int
 	TargetMaxLatency time.Duration
 	Gzip             bool
+	Precision        string
 
 	Database      string
 	ShardDuration string        // Set a custom shard duration.
@@ -136,6 +139,7 @@ func NewSimulator() *Simulator {
 		BatchSize:       5000,
 		Database:        "db",
 		ShardDuration:   "7d",
+		Precision:       "ns",
 	}
 }
 
@@ -173,6 +177,10 @@ func (s *Simulator) Validate() error {
 		}
 	}
 
+	if _, ok := precisionMultiplier[s.Precision]; !ok {
+		el = append(el, fmt.Errorf("invalid precision: %s", s.Precision))
+	}
+
 	if len(el) > 0 {
 		return el
 	}
@@ -208,6 +216,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
 	fmt.Fprintf(s.Stdout, "Writing into InfluxDB 2.0: %t\n", s.V2)
 	fmt.Fprintf(s.Stdout, "InfluxDB 2.0 Authorization Token: %s\n", s.Token)
+	fmt.Fprintf(s.Stdout, "Precision: %s\n", s.Precision)
 
 	if s.V2 == true && s.Token == "" {
 		fmt.Println("ERROR: Need to provide a token in ordere to write into InfluxDB 2.0")
@@ -368,6 +377,8 @@ func (s *Simulator) generateBatches() <-chan []byte {
 			s.BatchSize /= s.WritesPerPoint
 		}
 
+		timeDivisor := precisionMultiplier[s.Precision]
+
 		for i := 0; i < s.PointN(); i++ {
 			lastMN = i % s.Measurements
 			lastM = append(lastM[:1], []byte(strconv.Itoa(lastMN))...)
@@ -393,7 +404,7 @@ func (s *Simulator) generateBatches() <-chan []byte {
 			timestamp := s.startTime.Add(delta).UnixNano()
 
 			for f := 0; f < s.WritesPerPoint; f++ {
-				s.formatWrites(buf, lastM, tags, fields[fieldValueIndex][f], timestamp)
+				s.formatWrites(buf, lastM, tags, fields[fieldValueIndex][f], timestamp, timeDivisor)
 			}
 
 			// Increment next tag value.
@@ -427,12 +438,12 @@ func (s *Simulator) generateBatches() <-chan []byte {
 
 var space []byte = []byte(" ")
 
-func (s *Simulator) formatWrites(buf *bytes.Buffer, measurement []byte, tags []byte, fieldValues string, timestamp int64) {
+func (s *Simulator) formatWrites(buf *bytes.Buffer, measurement []byte, tags []byte, fieldValues string, timestamp int64, timeDivisor int64) {
 	buf.Write(measurement) // Write measurement
 	buf.Write(tags)
 	buf.Write(space) // Write a space.
 	buf.WriteString(fieldValues)
-	buf.WriteString(fmt.Sprintf(" %d\n", timestamp))
+	buf.WriteString(fmt.Sprintf(" %d\n", timestamp/timeDivisor))
 }
 
 // Vars is a subset of the data fields found at the /debug/vars endpoint.
@@ -728,7 +739,7 @@ var defaultSetupFn = func(s *Simulator) error {
 // defaultWriteBatch is the default implementation of the WriteBatch function.
 // It's the caller's responsibility to close the response body.
 var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error) {
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=ns&consistency=%s", s.Host, s.Database, s.Consistency), bytes.NewReader(buf))
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=%s&consistency=%s", s.Host, s.Database, s.Precision, s.Consistency), bytes.NewReader(buf))
 	if err != nil {
 		return 0, nil, err
 	}
