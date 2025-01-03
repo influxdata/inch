@@ -742,7 +742,14 @@ var defaultSetupFn = func(s *Simulator) error {
 // defaultWriteBatch is the default implementation of the WriteBatch function.
 // It's the caller's responsibility to close the response body.
 var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error) {
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&rp=%s&precision=%s&consistency=%s", s.Host, s.Database, s.RetentionPolicy, s.Precision, s.Consistency), bytes.NewReader(buf))
+	var url string
+	if s.RetentionPolicy == "" {
+		url = fmt.Sprintf("%s/write?db=%s&precision=%s&consistency=%s", s.Host, s.Database, s.Precision, s.Consistency)
+	} else {
+		url = fmt.Sprintf("%s/write?db=%s&rp=%s&precision=%s&consistency=%s", s.Host, s.Database, s.RetentionPolicy, s.Precision, s.Consistency)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(buf))
 	if err != nil {
 		return 0, nil, err
 	}

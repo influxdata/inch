@@ -82,7 +82,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.BoolVar(&m.inch.RandomizeFields, "randomize-fields", false, "Randomize field values")
 	fs.BoolVar(&m.inch.OneFieldPerLine, "one-field-per-line", false, "One line of line protocol per field instead of one line per point")
 	fs.IntVar(&m.inch.BatchSize, "b", 5000, "Batch size")
-	fs.StringVar(&m.inch.RetentionPolicy, "rp", "autogen", "Retention policy to write to")
+	fs.StringVar(&m.inch.RetentionPolicy, "rp", "", "Retention policy to write to")
 	fs.StringVar(&m.inch.Database, "db", "stress", "Database to write to")
 	fs.StringVar(&m.inch.ShardDuration, "shard-duration", "7d", "Set shard duration (default 7d)")
 	fs.StringVar(&m.inch.StartTime, "start-time", "", "Set start time (default now)")
