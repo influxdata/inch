@@ -103,11 +103,12 @@ type Simulator struct {
 	Gzip             bool
 	Precision        string
 
-	Database      string
-	ShardDuration string        // Set a custom shard duration.
-	StartTime     string        // Set a custom start time.
-	TimeSpan      time.Duration // The length of time to span writes over.
-	Delay         time.Duration // A delay inserted in between writes.
+	Database        string
+	RetentionPolicy string        // Write to a specific retention policy
+	ShardDuration   string        // Set a custom shard duration.
+	StartTime       string        // Set a custom start time.
+	TimeSpan        time.Duration // The length of time to span writes over.
+	Delay           time.Duration // A delay inserted in between writes.
 }
 
 // NewSimulator returns a new instance of Simulator.
@@ -138,6 +139,7 @@ func NewSimulator() *Simulator {
 		FieldPrefix:     "v0",
 		BatchSize:       5000,
 		Database:        "db",
+		RetentionPolicy: "autogen",
 		ShardDuration:   "7d",
 		Precision:       "ns",
 	}
@@ -213,6 +215,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Multiple writes per point: %t\n", s.OneFieldPerLine)
 	fmt.Fprintf(s.Stdout, "Batch Size: %d\n", s.BatchSize)
 	fmt.Fprintf(s.Stdout, "Database: %s (Shard duration: %s)\n", s.Database, s.ShardDuration)
+	fmt.Fprintf(s.Stdout, "Retention Policy: %s\n", s.RetentionPolicy)
 	fmt.Fprintf(s.Stdout, "Write Consistency: %s\n", s.Consistency)
 	fmt.Fprintf(s.Stdout, "Writing into InfluxDB 2.0: %t\n", s.V2)
 	fmt.Fprintf(s.Stdout, "InfluxDB 2.0 Authorization Token: %s\n", s.Token)
@@ -739,7 +742,14 @@ var defaultSetupFn = func(s *Simulator) error {
 // defaultWriteBatch is the default implementation of the WriteBatch function.
 // It's the caller's responsibility to close the response body.
 var defaultWriteBatch = func(s *Simulator, buf []byte) (statusCode int, body io.ReadCloser, err error) {
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/write?db=%s&precision=%s&consistency=%s", s.Host, s.Database, s.Precision, s.Consistency), bytes.NewReader(buf))
+	var url string
+	if s.RetentionPolicy == "" {
+		url = fmt.Sprintf("%s/write?db=%s&precision=%s&consistency=%s", s.Host, s.Database, s.Precision, s.Consistency)
+	} else {
+		url = fmt.Sprintf("%s/write?db=%s&rp=%s&precision=%s&consistency=%s", s.Host, s.Database, s.RetentionPolicy, s.Precision, s.Consistency)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(buf))
 	if err != nil {
 		return 0, nil, err
 	}
