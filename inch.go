@@ -222,7 +222,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 	fmt.Fprintf(s.Stdout, "Precision: %s\n", s.Precision)
 
 	if s.V2 == true && s.Token == "" {
-		fmt.Println("ERROR: Need to provide a token in ordere to write into InfluxDB 2.0")
+		fmt.Println("ERROR: Need to provide a token in order to write into InfluxDB 2.0")
 		return err
 	}
 
@@ -239,6 +239,7 @@ func (s *Simulator) Run(ctx context.Context) error {
 
 	// Initialize database.
 	if err := s.SetupFn(s); err != nil {
+		fmt.Fprintf(s.Stdout, "ERROR with database setup: you may want to use the `-no-setup` option.")
 		return err
 	}
 
