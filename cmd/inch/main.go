@@ -61,7 +61,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs := flag.NewFlagSet("inch", flag.ContinueOnError)
 	fs.BoolVar(&m.inch.Verbose, "v", false, "Verbose")
 	fs.BoolVar(&m.inch.V2, "v2", false, "Writing into InfluxDB 2.0")
-	fs.StringVar(&m.inch.Token, "token", "", "InfluxDB 2.0 Authorization token")
+	fs.StringVar(&m.inch.Token, "token", "", "InfluxDB 2.0 or 3 Authorization token")
 	fs.StringVar(&m.inch.ReportHost, "report-host", "", "Host to send metrics")
 	fs.StringVar(&m.inch.ReportUser, "report-user", "", "User for Host to send metrics")
 	fs.StringVar(&m.inch.ReportPassword, "report-password", "", "Password Host to send metrics")
@@ -92,6 +92,9 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.BoolVar(&m.inch.Gzip, "gzip", false, "Use gzip compression")
 	fs.StringVar(&m.inch.Precision, "precision", "ns", "Precision of writes")
 	noSetup := fs.Bool("no-setup", false, "Don't ping or set up tables/buckets on run (this is useful for load testing kapacitor)")
+	fs.BoolVar(&m.inch.V3, "v3", false, "Use v3 write endpoint (only compatible with v3 write endpoint)")
+	fs.BoolVar(&m.inch.V3NoSync, "v3-no-sync", false, "Disable waiting for durability before ack")
+	fs.BoolVar(&m.inch.V3AcceptPartial, "v3-accept-partial", false, "Accept lines in batch successfully even if subsequent lines error")
 
 	if err := fs.Parse(args); err != nil {
 		return err
